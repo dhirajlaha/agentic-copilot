@@ -20,3 +20,6 @@ frontend/*.tsbuildinfo
 .idea/
 .DS_Store
 Thumbs.db
+
+# Personal learning notes (kept local, not pushed)
+docs/learnings/

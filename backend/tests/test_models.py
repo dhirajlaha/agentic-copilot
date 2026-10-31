@@ -7,31 +7,19 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.db.enums import RunStatus, TicketStatus
 from app.db.models import (
     AgentRun,
     AgentStep,
     CodeChunk,
     RepoConnection,
-    RunStatus,
     Ticket,
-    TicketStatus,
     User,
 )
-from app.db.session import engine
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    with Session(bind=connection, join_transaction_mode="create_savepoint") as s:
-        yield s
-    transaction.rollback()
-    connection.close()
 
 
 def _make_ticket(session: Session) -> Ticket:
-    user = User(github_id=1, email="dev@example.com")
+    user = User(github_id=1, github_login="dev", email="dev@example.com")
     repo = RepoConnection(user=user, repo_full_name="octo/demo")
     ticket = Ticket(user=user, repo_connection=repo, title="Fix bug", description="details")
     session.add(ticket)

@@ -5,7 +5,8 @@ FastAPI service with LangGraph agents, PostgreSQL + pgvector, and Alembic migrat
 ## Current state
 
 - Dependencies are managed with **uv** (`pyproject.toml` + `uv.lock`). There is no `requirements.txt`.
-- Only `GET /health` exists so far. The database models and the first migration are done; the API, agents, RAG and LLM modules are still empty stubs.
+- Working: `GET /health`, GitHub sign-in (`/auth/*`), `/tickets` CRUD, the database models and migrations. Agents, RAG, LLM and the remaining routers are still empty stubs.
+- Every `/tickets` route requires a signed-in session. There is no development bypass.
 - **Docker Compose is not set up yet.** The spec schedules `infra/docker-compose.yml` and the backend/frontend Dockerfiles for Week 3. Until then, run the backend natively with uv and run Postgres in a single container (see below).
 
 ## Prerequisites
@@ -24,6 +25,46 @@ cd backend
 uv sync          # creates .venv/ and installs runtime + dev dependencies from uv.lock
 ```
 
+## Configure
+
+Copy `.env.example` to `.env` and fill it in. **The API refuses to start if a required value is missing**, so nothing runs with insecure defaults.
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Postgres connection (psycopg v3 driver) |
+| `SECRET_KEY` | Signs the OAuth state cookie. At least 32 characters: `openssl rand -hex 32` |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | From your GitHub App (below) |
+| `GITHUB_REDIRECT_URI` | Must exactly match the app's callback URL |
+| `FRONTEND_URL` | Where users land after sign-in; also the only allowed CORS origin |
+| `COOKIE_SECURE` | `true` by default (required by the `__Host-` cookie prefix) |
+| `ENABLE_DOCS` | `false` by default. Set `true` locally for Swagger UI at `/docs` |
+
+Running only migrations needs just `DATABASE_URL`.
+
+### Register the GitHub App (one-time)
+
+One GitHub App handles sign-in now and repo access later (Week 2), so you register it once.
+
+GitHub > Settings > Developer settings > GitHub Apps > **New GitHub App**, then:
+
+| Field | Value |
+| --- | --- |
+| GitHub App name | anything unique, e.g. `agentic-copilot-dev` |
+| Homepage URL | `http://localhost:5173` |
+| Callback URL | `http://localhost:8000/auth/github/callback` (must equal `GITHUB_REDIRECT_URI`) |
+| Expire user authorization tokens | leave on |
+| Request user authorization (OAuth) during installation | off |
+| Webhook > Active | **off** (nothing receives webhooks yet) |
+| Account permissions > Email addresses | **Read-only** |
+| Repository permissions | none for now |
+| Where can this GitHub App be installed? | **Any account** |
+
+"Any account" matters: GitHub only lets members of the owning organisation authorize a *private* app, so with "Only on this account" nobody else could sign in.
+
+Then on the app's page: copy the **Client ID**, click **Generate a new client secret**, and put both in `backend/.env`. Ignore the App ID and private key until Week 2. Never commit any of these. Use a separate GitHub App per deployed environment.
+
+Local HTTPS note: the session cookie uses the `__Host-` prefix, which needs `Secure`. Chrome and Firefox accept it on `http://localhost`; Safari does not, so use Chrome or Firefox for local sign-in.
+
 ## Run the API
 
 ```bash
@@ -38,7 +79,7 @@ curl http://localhost:8000/health
 # {"status":"ok"}
 ```
 
-Interactive API docs (Swagger UI) are at http://localhost:8000/docs.
+With `ENABLE_DOCS=true`, interactive API docs (Swagger UI) are at http://localhost:8000/docs.
 
 ## Run the database (interim, until Docker Compose exists)
 
@@ -65,9 +106,9 @@ cd backend
 uv run alembic upgrade head
 ```
 
-The connection URL defaults to the container above. Override it with `DATABASE_URL` in the environment or in `backend/.env` (see `.env.example`).
+The connection URL comes from `DATABASE_URL` (see Configure above).
 
-Other migration commands: `uv run alembic current`, `uv run alembic downgrade -1`, and `uv run alembic revision --autogenerate -m "message"` after changing `app/db/models.py`. Always read the generated file before applying it.
+Other migration commands: `uv run alembic current`, `uv run alembic downgrade -1`, and `uv run alembic revision --autogenerate -m "message"` after changing a model in `app/db/models/`. Always read the generated file before applying it.
 
 ## Tests
 
@@ -76,7 +117,28 @@ cd backend
 uv run pytest
 ```
 
-The model tests use the real local Postgres, so start the container and run `alembic upgrade head` first. Each test rolls back its changes.
+Tests need the Postgres container running. They use their own `copilot_test` database, which is created and migrated automatically, so your development data is never touched. Each test rolls back its changes. GitHub is faked, so no credentials or network are needed.
+
+```bash
+uv run ruff check . && uv run ruff format --check .   # lint and formatting
+```
+
+## Code layout
+
+Requests flow in one direction; each layer only knows the one below it.
+
+| Layer | Path | Responsibility |
+| --- | --- | --- |
+| Routes | `app/api/*.py` | Parse the request, call a service, shape the response. No business logic, no queries. |
+| Wiring | `app/api/deps.py` | Builds services and the current user for each request (FastAPI dependencies) |
+| Schemas | `app/schemas/` | Request/response models (the HTTP contract) |
+| Services | `app/services/` | Use cases and business rules; own the transaction (`commit`). No FastAPI imports. |
+| Repositories | `app/repositories/` | Database queries only |
+| Integrations | `app/integrations/` | Clients for external systems (GitHub) |
+| Models | `app/db/models/` | SQLAlchemy tables, one module per aggregate |
+| Core | `app/core/` | Settings, security helpers, domain exceptions |
+
+Services raise domain exceptions (`app/core/exceptions.py`); `app/api/errors.py` turns them into HTTP responses.
 
 ## Adding dependencies
 
@@ -91,7 +153,8 @@ Commit both `pyproject.toml` and `uv.lock`.
 
 | Week | Addition |
 | --- | --- |
-| 1 | Schema and migration (done); `/tickets` CRUD; LangGraph orchestrator skeleton; GitHub OAuth callback |
+| 1 | Schema, migrations, `/tickets` CRUD and GitHub sign-in (done); LangGraph orchestrator skeleton |
+| 2 | Repo-connect flow (needs its own GitHub permission decision, see learnings 03) |
 | 3 | `Dockerfile` for the backend; `infra/docker-compose.yml` wiring Postgres + backend + frontend. Then `docker compose up` replaces the manual steps above |
 | 9 | Kubernetes manifests in `infra/k8s/` for local `kind`/`minikube` |
 

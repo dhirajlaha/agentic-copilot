@@ -3,12 +3,15 @@
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.core.config import settings
+from app.core.config import get_database_settings
 from app.db.models import Base
 
 config = context.config
 # Single source of truth for the DB URL: app settings (env var / .env), not alembic.ini.
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+config.set_main_option(
+    "sqlalchemy.url",
+    get_database_settings().database_url.get_secret_value().replace("%", "%%"),
+)
 
 # Autogenerate compares the DB against this metadata.
 target_metadata = Base.metadata

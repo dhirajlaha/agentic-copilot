@@ -1,7 +1,9 @@
 """Shared fixtures.
 
-Tests run against a dedicated `copilot_test` database (created and migrated
-automatically), never the development database. Each test runs in a transaction that is
+Tests that need the database (anything using the `session` or `client` fixture) run
+against a dedicated `copilot_test` database, created and migrated on first use, never
+the development database. Pure unit tests (agents, LLM adapters, security helpers) do not
+touch Postgres at all. Each test runs in a transaction that is
 rolled back, so tests are isolated and leave nothing behind.
 """
 
@@ -26,6 +28,11 @@ os.environ["ENABLE_DOCS"] = "false"
 os.environ["SESSION_COOKIE_NAME"] = "__Host-session"
 os.environ["SESSION_TTL_SECONDS"] = "604800"
 os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
+os.environ["LLM_PROVIDER"] = "anthropic"
+os.environ["LLM_MODEL"] = "test-model"
+os.environ["LLM_API_KEY"] = "test-llm-key"
+for _name in ("LLM_BASE_URL", "AWS_REGION", "FOUNDRY_RESOURCE"):
+    os.environ.pop(_name, None)
 
 import pytest  # noqa: E402
 from alembic import command  # noqa: E402
@@ -40,7 +47,7 @@ from app.main import create_app  # noqa: E402
 from tests.fakes import FakeGitHub  # noqa: E402
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def _test_database() -> None:
     """Create the test database if needed and migrate it to the latest revision."""
     admin = create_engine(f"{_BASE_URL}/postgres", isolation_level="AUTOCOMMIT")
@@ -56,7 +63,7 @@ def _test_database() -> None:
 
 
 @pytest.fixture
-def session() -> Iterator[Session]:
+def session(_test_database: None) -> Iterator[Session]:
     connection = get_engine().connect()
     transaction = connection.begin()
     # create_savepoint: session.commit() (used by services) and DB errors only touch a

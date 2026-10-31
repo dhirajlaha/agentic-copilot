@@ -1,8 +1,10 @@
 import base64
 import hashlib
+from typing import Any
 
 from app.core.exceptions import GitHubError
 from app.integrations.github import GitHubUser
+from app.llm.client import LLMResult, LLMUsage
 
 
 class FakeGitHub:
@@ -30,3 +32,27 @@ class FakeGitHub:
         if challenge != self.challenges[-1]:
             raise GitHubError("PKCE verification failed")
         return self.user
+
+
+class FakeLLM:
+    """An LLMClient that returns canned outputs and records every call."""
+
+    provider = "fake"
+    model = "fake-model"
+
+    def __init__(self, output: Any = None, error: Exception | None = None) -> None:
+        self.output = output
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def generate_structured(self, *, system: str, prompt: str, schema: type) -> LLMResult[Any]:
+        self.calls.append({"system": system, "prompt": prompt, "schema": schema})
+        if self.error is not None:
+            raise self.error
+        return LLMResult(
+            output=self.output,
+            usage=LLMUsage(input_tokens=120, output_tokens=30),
+            model=self.model,
+            latency_ms=42,
+            request_id="req_test",
+        )

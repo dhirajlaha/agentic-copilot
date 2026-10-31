@@ -1,4 +1,5 @@
 from functools import cached_property, lru_cache
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
@@ -15,6 +16,54 @@ class DatabaseSettings(BaseSettings):
 
     # psycopg v3 driver, e.g. postgresql+psycopg://user:pass@host:5432/dbname
     database_url: SecretStr = Field(min_length=1)
+
+
+LLMProvider = Literal["anthropic", "bedrock", "foundry", "openai"]
+
+
+class LLMSettings(BaseSettings):
+    """Which LLM the agents use. Separate from `Settings` so the web app does not need
+    LLM credentials to start, and agents do not need OAuth secrets.
+
+    LLM_PROVIDER values:
+    - anthropic: Claude API. Needs LLM_API_KEY.
+    - bedrock: Claude on Amazon Bedrock. Needs AWS_REGION and AWS credentials.
+    - foundry: Claude on Microsoft Foundry. Needs LLM_API_KEY and FOUNDRY_RESOURCE.
+    - openai: OpenAI, or any OpenAI-compatible endpoint (Azure OpenAI, Gemini, vLLM)
+      selected with LLM_BASE_URL. Needs LLM_API_KEY.
+    """
+
+    model_config = _ENV
+
+    llm_provider: LLMProvider
+    # Exact model id for the chosen provider, e.g. claude-opus-5-5, or on Bedrock
+    # anthropic.claude-opus-5-5. No default: the model is a deliberate choice.
+    llm_model: str = Field(min_length=1)
+    llm_api_key: SecretStr | None = None
+    llm_base_url: str | None = None
+    aws_region: str | None = None
+    foundry_resource: str | None = None
+
+    # Room for adaptive thinking plus the answer; responses stay under SDK HTTP timeouts.
+    llm_max_output_tokens: int = Field(default=16000, gt=0)
+    llm_timeout_seconds: float = Field(default=300.0, gt=0)
+    # The SDKs retry connection errors, 408/409/429 and 5xx with backoff.
+    llm_max_retries: int = Field(default=2, ge=0)
+
+    @model_validator(mode="after")
+    def _provider_requirements(self) -> "LLMSettings":
+        missing: list[str] = []
+        if self.llm_provider in ("anthropic", "foundry", "openai") and not self.llm_api_key:
+            missing.append("LLM_API_KEY")
+        if self.llm_provider == "foundry" and not self.foundry_resource:
+            missing.append("FOUNDRY_RESOURCE")
+        if self.llm_provider == "bedrock" and not self.aws_region:
+            missing.append("AWS_REGION")
+        if missing:
+            raise ValueError(f"LLM_PROVIDER={self.llm_provider} requires {', '.join(missing)}")
+        if self.llm_base_url and self.llm_provider != "openai":
+            raise ValueError("LLM_BASE_URL only applies to LLM_PROVIDER=openai")
+        return self
 
 
 class Settings(BaseSettings):
@@ -72,6 +121,11 @@ class Settings(BaseSettings):
 @lru_cache
 def get_database_settings() -> DatabaseSettings:
     return DatabaseSettings()  # type: ignore[call-arg]  # values come from the environment
+
+
+@lru_cache
+def get_llm_settings() -> LLMSettings:
+    return LLMSettings()  # type: ignore[call-arg]  # values come from the environment
 
 
 @lru_cache

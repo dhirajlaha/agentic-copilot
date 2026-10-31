@@ -5,7 +5,7 @@ FastAPI service with LangGraph agents, PostgreSQL + pgvector, and Alembic migrat
 ## Current state
 
 - Dependencies are managed with **uv** (`pyproject.toml` + `uv.lock`). There is no `requirements.txt`.
-- Working: `GET /health`, GitHub sign-in (`/auth/*`), `/tickets` CRUD, the database models and migrations. Agents, RAG, LLM and the remaining routers are still empty stubs.
+- Working: `GET /health`, GitHub sign-in (`/auth/*`), `/tickets` CRUD, the database models and migrations. The LangGraph orchestrator runs the Planner agent (`app/agents/`) against any configured LLM provider; it is not yet wired to the API or database. RAG and the remaining routers are still empty stubs.
 - Every `/tickets` route requires a signed-in session. There is no development bypass.
 - **Docker Compose is not set up yet.** The spec schedules `infra/docker-compose.yml` and the backend/frontend Dockerfiles for Week 3. Until then, run the backend natively with uv and run Postgres in a single container (see below).
 
@@ -40,6 +40,8 @@ Copy `.env.example` to `.env` and fill it in. **The API refuses to start if a re
 | `ENABLE_DOCS` | `false` by default. Set `true` locally for Swagger UI at `/docs` |
 
 Running only migrations needs just `DATABASE_URL`.
+
+**LLM settings** (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, ...) are only needed when the agents run, not to start the API. Supported: Claude API, Claude on Amazon Bedrock, Claude on Microsoft Foundry, and OpenAI or any OpenAI-compatible endpoint (Azure OpenAI, Gemini, vLLM) via `LLM_BASE_URL`. See `.env.example` for the variables each needs.
 
 ### Register the GitHub App (one-time)
 
@@ -117,7 +119,7 @@ cd backend
 uv run pytest
 ```
 
-Tests need the Postgres container running. They use their own `copilot_test` database, which is created and migrated automatically, so your development data is never touched. Each test rolls back its changes. GitHub is faked, so no credentials or network are needed.
+Tests that use the database need the Postgres container running; pure unit tests (agents, LLM adapters, security) do not. Database tests use their own `copilot_test` database, which is created and migrated automatically, so your development data is never touched. Each test rolls back its changes. GitHub and every LLM provider are faked (the LLM adapters run against the real SDKs with a fake HTTP transport), so no credentials, API keys or network are needed.
 
 ```bash
 uv run ruff check . && uv run ruff format --check .   # lint and formatting
@@ -135,7 +137,9 @@ Requests flow in one direction; each layer only knows the one below it.
 | Services | `app/services/` | Use cases and business rules; own the transaction (`commit`). No FastAPI imports. |
 | Repositories | `app/repositories/` | Database queries only |
 | Integrations | `app/integrations/` | Clients for external systems (GitHub) |
+| LLM | `app/llm/` | Provider-agnostic `LLMClient` interface, Anthropic and OpenAI-compatible adapters, factory |
 | Models | `app/db/models/` | SQLAlchemy tables, one module per aggregate |
+| Agents | `app/agents/` | LangGraph state and nodes; `orchestrator.py` builds the graph |
 | Core | `app/core/` | Settings, security helpers, domain exceptions |
 
 Services raise domain exceptions (`app/core/exceptions.py`); `app/api/errors.py` turns them into HTTP responses.

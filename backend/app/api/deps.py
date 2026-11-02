@@ -13,10 +13,12 @@ from app.db.models import User
 from app.db.session import get_session
 from app.integrations.github import GitHubOAuth, GitHubOAuthClient
 from app.repositories.repo_connection_repository import RepoConnectionRepository
+from app.repositories.run_repository import AgentRunRepository
 from app.repositories.session_repository import UserSessionRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
+from app.services.run_service import RunService
 from app.services.ticket_service import TicketService
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -69,6 +71,11 @@ def get_ticket_service(session: SessionDep) -> TicketService:
     return TicketService(session, TicketRepository(session), RepoConnectionRepository(session))
 
 
+def get_run_service(session: SessionDep) -> RunService:
+    return RunService(session, TicketRepository(session), AgentRunRepository(session))
+
+
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 TicketServiceDep = Annotated[TicketService, Depends(get_ticket_service)]
+RunServiceDep = Annotated[RunService, Depends(get_run_service)]
 CurrentUser = Annotated[User, Depends(get_current_user)]

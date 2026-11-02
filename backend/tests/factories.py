@@ -4,7 +4,7 @@ from itertools import count
 from sqlalchemy.orm import Session
 
 from app.core.security import generate_token, hash_token
-from app.db.models import RepoConnection, User, UserSession
+from app.db.models import RepoConnection, Ticket, User, UserSession
 
 SESSION_COOKIE = "__Host-session"  # default session_cookie_name
 _ids = count(1000)
@@ -39,3 +39,12 @@ def create_session_token(
     )
     session.flush()
     return token
+
+
+def create_ticket(
+    session: Session, user: User, repo: RepoConnection, title: str = "Fix bug"
+) -> Ticket:
+    ticket = Ticket(user_id=user.id, repo_connection_id=repo.id, title=title, description="d")
+    session.add(ticket)
+    session.flush()
+    return ticket

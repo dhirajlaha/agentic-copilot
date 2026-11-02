@@ -5,10 +5,11 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, health, tickets
+from app.api import auth, health, runs, tickets
 from app.api.errors import register_exception_handlers
 from app.api.middleware import OriginCheckMiddleware
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 
 
 @asynccontextmanager
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_logging()
     settings = get_settings()
     app = FastAPI(
         title="Agentic Dev/Test Copilot",
@@ -46,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(tickets.router)
+    app.include_router(runs.router)
     return app
 
 

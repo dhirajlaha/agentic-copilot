@@ -5,7 +5,7 @@ FastAPI service with LangGraph agents, PostgreSQL + pgvector, and Alembic migrat
 ## Current state
 
 - Dependencies are managed with **uv** (`pyproject.toml` + `uv.lock`). There is no `requirements.txt`.
-- Working: `GET /health`, GitHub sign-in (`/auth/*`), `/tickets` CRUD, the database models and migrations. The LangGraph orchestrator runs the Planner agent (`app/agents/`) against any configured LLM provider; it is not yet wired to the API or database. RAG and the remaining routers are still empty stubs.
+- Working: `GET /health`, GitHub sign-in (`/auth/*`), `/tickets` CRUD, the database models and migrations. Runs: `POST /tickets/{id}/run` queues a run, a separate worker process executes the agent graph (currently the Planner) and stores every step, and `GET /runs/{id}` returns status plus the step trace. RAG and the remaining routers are still empty stubs.
 - Every `/tickets` route requires a signed-in session. There is no development bypass.
 - **Docker Compose is not set up yet.** The spec schedules `infra/docker-compose.yml` and the backend/frontend Dockerfiles for Week 3. Until then, run the backend natively with uv and run Postgres in a single container (see below).
 
@@ -74,7 +74,16 @@ cd backend
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-Check it:
+Runs are executed by a **separate worker process** (it needs the LLM settings below). Start it in a second terminal:
+
+```bash
+cd backend
+uv run python -m app.worker
+```
+
+You can run several workers; Postgres row locking ensures each run is picked up once. Ctrl+C stops a worker after its current run.
+
+Check the API:
 
 ```bash
 curl http://localhost:8000/health
@@ -134,7 +143,8 @@ Requests flow in one direction; each layer only knows the one below it.
 | Routes | `app/api/*.py` | Parse the request, call a service, shape the response. No business logic, no queries. |
 | Wiring | `app/api/deps.py` | Builds services and the current user for each request (FastAPI dependencies) |
 | Schemas | `app/schemas/` | Request/response models (the HTTP contract) |
-| Services | `app/services/` | Use cases and business rules; own the transaction (`commit`). No FastAPI imports. |
+| Services | `app/services/` | Use cases and business rules; own the transaction (`commit`). No FastAPI imports. `run_executor.py` is the worker-side runner. |
+| Worker | `app/worker.py` | Process that polls the run queue (`agent_runs`) and executes runs |
 | Repositories | `app/repositories/` | Database queries only |
 | Integrations | `app/integrations/` | Clients for external systems (GitHub) |
 | LLM | `app/llm/` | Provider-agnostic `LLMClient` interface, Anthropic and OpenAI-compatible adapters, factory |

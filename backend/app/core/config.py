@@ -118,6 +118,23 @@ class Settings(BaseSettings):
         return self._origin(self.github_redirect_uri)
 
 
+class WorkerSettings(BaseSettings):
+    """How the run worker polls the queue and how long a claimed run may go silent."""
+
+    model_config = _ENV
+
+    worker_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    # A running run must be renewed within this window (it is renewed after every agent
+    # step). Must exceed the slowest single step: an LLM call can take up to
+    # LLM_TIMEOUT_SECONDS x (LLM_MAX_RETRIES + 1).
+    run_lease_seconds: int = Field(default=1200, gt=0)
+
+
+@lru_cache
+def get_worker_settings() -> WorkerSettings:
+    return WorkerSettings()
+
+
 @lru_cache
 def get_database_settings() -> DatabaseSettings:
     return DatabaseSettings()  # type: ignore[call-arg]  # values come from the environment

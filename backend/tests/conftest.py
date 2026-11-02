@@ -8,7 +8,7 @@ rolled back, so tests are isolated and leave nothing behind.
 """
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 # Must be set before any `app` import: settings are read from the environment.
@@ -38,7 +38,7 @@ import pytest  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import create_engine, text  # noqa: E402
+from sqlalchemy import Connection, create_engine, text  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.api.deps import get_github_oauth  # noqa: E402
@@ -63,15 +63,33 @@ def _test_database() -> None:
 
 
 @pytest.fixture
-def session(_test_database: None) -> Iterator[Session]:
-    connection = get_engine().connect()
-    transaction = connection.begin()
-    # create_savepoint: session.commit() (used by services) and DB errors only touch a
-    # savepoint, so the outer rollback below still undoes everything.
-    with Session(bind=connection, join_transaction_mode="create_savepoint") as s:
-        yield s
+def connection(_test_database: None) -> Iterator[Connection]:
+    """One connection per test, inside a transaction that is rolled back at the end."""
+    conn = get_engine().connect()
+    transaction = conn.begin()
+    yield conn
     transaction.rollback()
-    connection.close()
+    conn.close()
+
+
+@pytest.fixture
+def session_factory(connection: Connection) -> Callable[[], Session]:
+    """Sessions bound to the test connection. `join_transaction_mode="create_savepoint"`
+    turns their commit() into savepoints, so code that commits (services, the worker)
+    still leaves nothing behind, and DB errors do not break the outer rollback."""
+    # Same options as the production session factory (app/db/session.py).
+    return lambda: Session(
+        bind=connection,
+        join_transaction_mode="create_savepoint",
+        autoflush=False,
+        expire_on_commit=False,
+    )
+
+
+@pytest.fixture
+def session(session_factory: Callable[[], Session]) -> Iterator[Session]:
+    with session_factory() as s:
+        yield s
 
 
 @pytest.fixture
@@ -80,9 +98,18 @@ def github() -> FakeGitHub:
 
 
 @pytest.fixture
-def client(session: Session, github: FakeGitHub) -> Iterator[TestClient]:
+def client(
+    session: Session, session_factory: Callable[[], Session], github: FakeGitHub
+) -> Iterator[TestClient]:
     app = create_app()
-    app.dependency_overrides[get_session] = lambda: session
+
+    def session_per_request() -> Iterator[Session]:
+        # Like production: a fresh session for every request (no stale cached objects).
+        # It shares the test connection, so it sees data the test created in `session`.
+        with session_factory() as request_session:
+            yield request_session
+
+    app.dependency_overrides[get_session] = session_per_request
     app.dependency_overrides[get_github_oauth] = lambda: github
     # https base URL so the client's cookie jar accepts and returns Secure cookies.
     yield TestClient(app, base_url="https://api.test", follow_redirects=False)

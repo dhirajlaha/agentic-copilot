@@ -25,3 +25,12 @@ class OAuthDeniedError(AppError):
 
 class GitHubError(AppError):
     """GitHub rejected a request or was unreachable."""
+
+
+class ConflictError(AppError):
+    """The request conflicts with the current state (e.g. a run is already active)."""
+
+
+class RepositoryAccessError(AppError):
+    """The repository could not be read (missing, private without access, too large,
+    or GitHub rate limits)."""

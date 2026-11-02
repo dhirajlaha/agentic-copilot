@@ -56,3 +56,18 @@ class FakeLLM:
             latency_ms=42,
             request_id="req_test",
         )
+
+
+class FakeRepoFiles:
+    """RepoFilesProvider returning fixed paths, or raising a configured error."""
+
+    def __init__(self, files: list[str] | None = None, error: Exception | None = None) -> None:
+        self.files = files if files is not None else ["src/login.py", "tests/test_login.py"]
+        self.error = error
+        self.requested: list[str] = []
+
+    def list_files(self, repo_full_name: str, token: str | None = None) -> list[str]:
+        self.requested.append(repo_full_name)
+        if self.error is not None:
+            raise self.error
+        return self.files

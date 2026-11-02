@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.core.exceptions import (
     AppError,
     AuthenticationError,
+    ConflictError,
     GitHubError,
     NotFoundError,
 )
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 _STATUS: dict[type[AppError], int] = {
     NotFoundError: 404,
     AuthenticationError: 401,
+    ConflictError: 409,
     GitHubError: 502,
 }
 

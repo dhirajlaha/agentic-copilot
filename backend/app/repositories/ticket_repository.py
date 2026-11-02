@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.db.enums import TicketStatus
@@ -42,3 +42,12 @@ class TicketRepository:
 
     def delete(self, ticket: Ticket) -> None:
         self._session.delete(ticket)
+
+    def get(self, ticket_id: UUID) -> Ticket | None:
+        return self._session.get(Ticket, ticket_id)
+
+    def set_status(self, ticket_ids: list[UUID], status: TicketStatus) -> None:
+        if ticket_ids:
+            self._session.execute(
+                update(Ticket).where(Ticket.id.in_(ticket_ids)).values(status=status)
+            )

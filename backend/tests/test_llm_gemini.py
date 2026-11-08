@@ -71,6 +71,31 @@ def test_success_sends_schema_and_maps_result():
     assert config["responseJsonSchema"]["properties"]["city"]["type"] == "string"
 
 
+def test_thinking_is_off_by_default_and_can_be_enabled():
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content)["generationConfig"])
+        return httpx.Response(200, json=reply('{"city": "Rome", "population": 1}'))
+
+    client = make_client(handler)
+    call(client)
+    client.generate_structured(system="s", prompt="p", schema=Answer, thinking=True)
+    assert bodies[0]["thinkingConfig"] == {"thinking_budget": 0}  # the SDK's wire spelling
+    assert "thinkingConfig" not in bodies[1]
+
+
+def test_the_sdks_automatic_function_calling_is_off():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=reply('{"city": "Rome", "population": 1}'))
+
+    call(make_client(handler))
+    assert "tools" not in seen["body"]  # nothing is offered to the model
+
+
 def test_missing_usage_is_reported_as_unknown():
     def handler(request):
         return httpx.Response(200, json=reply('{"city": "Rome", "population": 1}', usage=False))

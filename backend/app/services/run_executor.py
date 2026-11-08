@@ -1,11 +1,13 @@
 """Worker-side execution of queued runs.
 
-Each run: claim it (status running + lease) -> load ticket and repo -> list repo files
--> stream the agent graph, persisting every step as it completes and renewing the lease
--> mark the run completed or failed and update the ticket.
+Each run: claim it (status running + lease) -> load ticket and repo -> bring the code
+index up to date -> list repo files -> stream the agent graph, persisting every step as it
+completes and renewing the lease -> mark the run completed or failed and update the ticket.
 """
 
+import dataclasses
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -15,14 +17,15 @@ from sqlalchemy.orm import Session
 
 from app.agents.planner import PlanningError
 from app.agents.state import RunInput
+from app.agents.steps import StepRecord
 from app.core.exceptions import AppError
 from app.db.enums import RunStatus, TicketStatus
-from app.db.models import AgentRun
 from app.integrations.github_app import InstallationTokenSource
 from app.integrations.github_repos import RepoFilesProvider
 from app.llm.client import LLMError
 from app.repositories.run_repository import AgentRunRepository, AgentStepRepository
 from app.repositories.ticket_repository import TicketRepository
+from app.services.index_service import RepoIndexer
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,7 @@ class RunExecutor:
         graph: CompiledStateGraph,
         repo_files: RepoFilesProvider,
         tokens: InstallationTokenSource,
+        indexer: RepoIndexer,
         lease_seconds: int,
         clock: Callable[[], datetime] = _now,
     ) -> None:
@@ -51,6 +55,7 @@ class RunExecutor:
         self._graph = graph
         self._repo_files = repo_files
         self._tokens = tokens
+        self._indexer = indexer
         self._lease = timedelta(seconds=lease_seconds)
         self._clock = clock
 
@@ -84,7 +89,7 @@ class RunExecutor:
         with self._session_factory() as session:
             runs, steps = AgentRunRepository(session), AgentStepRepository(session)
             try:
-                run_input = self._build_input(session, runs.get(run_id))
+                run_input = self._prepare(session, run_id, runs, steps)
                 # stream_mode="updates" yields each node's output as soon as it finishes,
                 # so the dashboard sees steps live instead of only at the end.
                 for update in self._graph.stream(run_input, stream_mode="updates"):
@@ -110,23 +115,61 @@ class RunExecutor:
                     "Internal error while running the pipeline.",
                 )
 
-    def _build_input(self, session: Session, run: AgentRun | None) -> RunInput:
+    def _prepare(
+        self,
+        session: Session,
+        run_id: UUID,
+        runs: AgentRunRepository,
+        steps: AgentStepRepository,
+    ) -> RunInput:
+        """Load the ticket, bring the code index up to date (recorded as a step), and
+        build the graph's input."""
+        run = runs.get(run_id)
         if run is None:
             raise AppError("Run disappeared before it could start")
         ticket = TicketRepository(session).get(run.ticket_id)
         if ticket is None:
             raise AppError("Ticket was deleted")
         repo = ticket.repo_connection
-        # A fresh, short-lived token per run, used only for this listing and never stored.
+        repo_id, repo_name = repo.id, repo.repo_full_name
+        # A fresh, short-lived token per run, used only for this run and never stored.
         token = self._tokens.installation_token(repo.github_installation.installation_id)
-        files = self._repo_files.list_files(repo.repo_full_name, token)
+
+        started = time.perf_counter()
+        result = self._indexer.sync(
+            repo_connection_id=repo_id,
+            repo_full_name=repo_name,
+            token=token,
+            heartbeat=lambda: self._renew_lease(run_id),
+        )
+        steps.add(
+            run_id,
+            StepRecord(
+                agent_name="indexer",
+                input={"repo_connection_id": str(repo_id)},
+                output=dataclasses.asdict(result),
+                tokens_used=None,
+                latency_ms=round((time.perf_counter() - started) * 1000),
+                model=self._indexer.embedding_model,
+            ),
+        )
+        runs.extend_lease(run_id, self._clock() + self._lease)
+        session.commit()
+
         return RunInput(
             ticket_id=str(ticket.id),
-            repo_connection_id=str(ticket.repo_connection_id),
+            repo_connection_id=str(repo_id),
             title=ticket.title,
             description=ticket.description,
-            repo_files=files,
+            repo_files=self._repo_files.list_files(repo_name, token),
         )
+
+    def _renew_lease(self, run_id: UUID) -> None:
+        """Keep the run's lease alive from a separate session, so a long indexing job is
+        not mistaken for a dead worker."""
+        with self._session_factory() as session:
+            AgentRunRepository(session).extend_lease(run_id, self._clock() + self._lease)
+            session.commit()
 
     def _finish(
         self,

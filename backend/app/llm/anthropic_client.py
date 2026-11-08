@@ -37,7 +37,9 @@ class AnthropicLLMClient:
         self.model = model
         self._max_output_tokens = max_output_tokens
 
-    def generate_structured(self, *, system: str, prompt: str, schema: type[T]) -> LLMResult[T]:
+    def generate_structured(
+        self, *, system: str, prompt: str, schema: type[T], thinking: bool = False
+    ) -> LLMResult[T]:
         started = time.perf_counter()
         try:
             # Structured outputs: the API constrains the answer to this JSON schema.
@@ -53,6 +55,8 @@ class AnthropicLLMClient:
                 output_config={
                     "format": {"type": "json_schema", "schema": anthropic.transform_schema(schema)}
                 },
+                # Without this flag no thinking parameter is sent, so Claude does not think.
+                **({"thinking": {"type": "adaptive"}} if thinking else {}),
             )
         except anthropic.APIConnectionError as exc:  # includes APITimeoutError
             raise LLMUnavailableError(f"{self.provider}: connection failed: {exc}") from exc

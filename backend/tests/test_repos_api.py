@@ -322,6 +322,15 @@ def test_list_is_scoped_to_the_user(client, session, alice, bob):
     assert [r["id"] for r in client.get("/repos").json()] == [str(mine.id)]
 
 
+def test_list_shows_the_state_of_each_repos_code_index(client, session, alice):
+    create_repo(session, alice[0], "octo/fresh")
+    _as(client, alice)
+    (repo,) = client.get("/repos").json()
+    assert repo["index_status"] == "not_indexed"
+    assert repo["indexed_commit_sha"] is None and repo["indexed_at"] is None
+    assert repo["index_error"] is None
+
+
 def test_disconnect_deletes_the_repo_and_its_tickets(client, session, alice):
     repo = create_repo(session, alice[0])
     ticket = create_ticket(session, alice[0], repo)

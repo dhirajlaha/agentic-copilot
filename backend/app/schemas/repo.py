@@ -15,6 +15,11 @@ class RepoOut(BaseModel):
     id: uuid.UUID
     repo_full_name: str
     connected_at: datetime
+    # State of the code index that agents search. "not_indexed" until the first run.
+    index_status: str
+    indexed_commit_sha: str | None
+    indexed_at: datetime | None
+    index_error: str | None
 
 
 class AvailableRepoOut(BaseModel):

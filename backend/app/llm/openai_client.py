@@ -30,7 +30,10 @@ class OpenAICompatibleLLMClient:
         self.model = model
         self._max_output_tokens = max_output_tokens
 
-    def generate_structured(self, *, system: str, prompt: str, schema: type[T]) -> LLMResult[T]:
+    def generate_structured(
+        self, *, system: str, prompt: str, schema: type[T], thinking: bool = False
+    ) -> LLMResult[T]:
+        # `thinking` is accepted for interface compatibility; this protocol has no common switch.
         started = time.perf_counter()
         try:
             # `parse` sends a strict JSON schema as `response_format` and validates the

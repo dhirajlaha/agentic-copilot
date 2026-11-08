@@ -12,7 +12,7 @@ from app.db.models import AgentRun, AgentStep, Ticket
 from app.llm.client import LLMUnavailableError
 from app.services.run_executor import LEASE_EXPIRED_ERROR, RunExecutor
 from tests.factories import create_repo, create_ticket, create_user
-from tests.fakes import FakeGitHubApp, FakeLLM, FakeRepoFiles
+from tests.fakes import FakeGitHubApp, FakeIndexer, FakeLLM, FakeRepoFiles
 
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 
@@ -25,12 +25,15 @@ def planner_output() -> PlannerOutput:
     )
 
 
-def make_executor(session_factory, llm=None, repo_files=None, tokens=None, clock=lambda: NOW):
+def make_executor(
+    session_factory, llm=None, repo_files=None, tokens=None, indexer=None, clock=lambda: NOW
+):
     return RunExecutor(
         session_factory=session_factory,
         graph=build_graph(llm or FakeLLM(planner_output())),
         repo_files=repo_files or FakeRepoFiles(),
         tokens=tokens or FakeGitHubApp(),
+        indexer=indexer or FakeIndexer(),
         lease_seconds=600,
         clock=clock,
     )
@@ -77,11 +80,60 @@ def test_successful_run_persists_steps_and_completes(session, session_factory, t
     assert app.tokens_requested == [installation_id]
     assert repo_files.tokens == [f"token-for-{installation_id}"]
 
-    (step,) = session.scalars(select(AgentStep).where(AgentStep.run_id == run.id)).all()
+    rows = session.scalars(select(AgentStep).where(AgentStep.run_id == run.id)).all()
+    indexer_step, step = sorted(rows, key=lambda r: r.agent_name != "indexer")
+    assert indexer_step.agent_name == "indexer"
     assert step.agent_name == "planner"
     assert step.tokens_used == 150 and step.latency_ms == 42
     assert step.output["candidate_files"][0]["path"] == "src/login.py"
     assert step.input == {"ticket_id": str(ticket.id), "files_shown": 2, "files_omitted": 0}
+
+
+def test_the_index_is_synced_first_and_recorded_as_a_step(session, session_factory, ticket):
+    run = queue_run(session, ticket)
+    session.commit()
+    indexer = FakeIndexer()
+    app = FakeGitHubApp()
+
+    make_executor(session_factory, indexer=indexer, tokens=app).run_next()
+
+    installation_id = ticket.repo_connection.github_installation.installation_id
+    assert indexer.calls == [{"repo": "octo/demo", "token": f"token-for-{installation_id}"}]
+    step = session.scalars(
+        select(AgentStep).where(AgentStep.run_id == run.id, AgentStep.agent_name == "indexer")
+    ).one()
+    assert step.input == {"repo_connection_id": str(ticket.repo_connection_id)}
+    assert step.output["commit_sha"] == "b" * 40
+    assert step.output["files_indexed"] == 3 and step.output["chunks_written"] == 5
+    assert step.tokens_used is None
+
+
+def test_a_failing_index_fails_the_run_before_any_agent_runs(session, session_factory, ticket):
+    run = queue_run(session, ticket)
+    session.commit()
+    llm = FakeLLM(planner_output())
+    indexer = FakeIndexer(error=RepositoryAccessError("octo/demo is too large to index"))
+
+    make_executor(session_factory, llm=llm, indexer=indexer).run_next()
+
+    run = reload(session, run)
+    assert run.status == RunStatus.FAILED
+    assert run.error == "octo/demo is too large to index"
+    assert llm.calls == []  # the Planner never ran
+    assert reload(session, ticket).status == TicketStatus.OPEN
+
+
+def test_the_indexers_heartbeat_renews_the_run_lease(session, session_factory, ticket):
+    run = queue_run(session, ticket)
+    session.commit()
+    executor = make_executor(session_factory, indexer=FakeIndexer())  # FakeIndexer beats once
+    renewed = []
+    original = executor._renew_lease
+    executor._renew_lease = lambda run_id: (renewed.append(run_id), original(run_id))[1]
+
+    executor.run_next()
+
+    assert renewed == [run.id]
 
 
 def test_oldest_pending_run_is_claimed_first(session, session_factory):

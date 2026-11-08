@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import DatabaseSettings, GitHubAppSettings, Settings
+from app.core.config import DatabaseSettings, EmbeddingSettings, GitHubAppSettings, Settings
 
 BASE = {
     "secret_key": "k" * 32,
@@ -104,3 +104,65 @@ def test_non_rsa_key_is_rejected(tmp_path):
 def test_slug_must_be_url_safe(slug):
     with pytest.raises(ValidationError):
         app_settings(github_app_slug=slug)
+
+
+# ---- Embedding settings --------------------------------------------------------------
+
+
+@pytest.fixture
+def clean_embedding_env(monkeypatch):
+    for name in ("EMBEDDING_API_KEY", "LLM_API_KEY", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS"):
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+def embedding_settings(**values):
+    return EmbeddingSettings(**values, _env_file=None)
+
+
+def test_embedding_defaults(clean_embedding_env):
+    s = embedding_settings(embedding_api_key="k")
+    assert (s.embedding_provider, s.embedding_model) == ("gemini", "gemini-embedding-001")
+    assert (s.embedding_dimensions, s.embedding_batch_size) == (768, 64)
+    assert (s.embedding_max_batch_tokens, s.embedding_rate_limit_retries) == (20_000, 6)
+
+
+def test_embedding_key_falls_back_to_the_llm_key(clean_embedding_env):
+    clean_embedding_env.setenv("LLM_API_KEY", "llm-key")
+    assert embedding_settings().embedding_api_key.get_secret_value() == "llm-key"
+
+
+def test_an_explicit_embedding_key_wins(clean_embedding_env):
+    clean_embedding_env.setenv("LLM_API_KEY", "llm-key")
+    clean_embedding_env.setenv("EMBEDDING_API_KEY", "embedding-key")
+    assert embedding_settings().embedding_api_key.get_secret_value() == "embedding-key"
+
+
+def test_the_embedding_key_is_required(clean_embedding_env):
+    with pytest.raises(ValidationError, match="EMBEDDING_API_KEY"):
+        embedding_settings()
+
+
+@pytest.mark.parametrize("size", [0, 101, -1])
+def test_batch_size_is_bounded(clean_embedding_env, size):
+    with pytest.raises(ValidationError):
+        embedding_settings(embedding_api_key="k", embedding_batch_size=size)
+
+
+def test_dimensions_must_match_the_database_column(clean_embedding_env):
+    from app.llm.factory import build_embedding_client
+
+    s = embedding_settings(embedding_api_key="k", embedding_dimensions=384)
+    with pytest.raises(ValueError, match="does not match the database column"):
+        build_embedding_client(s)
+
+
+def test_the_factory_builds_a_gemini_client(clean_embedding_env):
+    from app.llm.factory import build_embedding_client
+    from app.llm.gemini_embeddings import GeminiEmbeddingClient
+
+    client = build_embedding_client(embedding_settings(embedding_api_key="k"))
+    assert isinstance(client, GeminiEmbeddingClient)
+    assert (client.model, client.dimensions, client.batch_size) == ("gemini-embedding-001", 768, 64)
+    options = client._client._api_client._http_options
+    assert 429 not in options.retry_options.http_status_codes  # the adapter handles 429

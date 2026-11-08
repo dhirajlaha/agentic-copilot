@@ -100,8 +100,9 @@ class PlannerAgent:
         prompt, shown, omitted = build_user_prompt(state)
         if omitted:
             logger.warning("planner: %d repository paths not shown to the model", omitted)
+        # Choosing files from a list does not need deliberation, so thinking stays off.
         result = self._llm.generate_structured(
-            system=SYSTEM_PROMPT, prompt=prompt, schema=PlannerOutput
+            system=SYSTEM_PROMPT, prompt=prompt, schema=PlannerOutput, thinking=False
         )
         plan = verify_plan(result.output, state["repo_files"])
         if plan.rejected_files:

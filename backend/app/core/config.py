@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
-from pydantic import Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -127,6 +127,43 @@ class Settings(BaseSettings):
         return self._origin(self.github_redirect_uri)
 
 
+class EmbeddingSettings(BaseSettings):
+    """Embeddings for the code index. Separate from `LLMSettings`: the model that writes
+    code and the model that embeds it are different products and may be different vendors.
+
+    Only Gemini is wired up today. The key falls back to LLM_API_KEY so a Gemini user
+    configures one key; set EMBEDDING_API_KEY to use a different one.
+    """
+
+    model_config = _ENV
+
+    embedding_provider: Literal["gemini"] = "gemini"
+    embedding_model: str = Field(default="gemini-embedding-001", min_length=1)
+    # Must equal the size of the `code_chunks.embedding` column (checked at startup).
+    embedding_dimensions: int = Field(default=768, gt=0)
+    embedding_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("EMBEDDING_API_KEY", "LLM_API_KEY")
+    )
+    # Texts per provider request (Gemini allows up to 100).
+    embedding_batch_size: int = Field(default=64, gt=0, le=100)
+    # Estimated tokens per request. Must stay below the provider's per-minute token quota
+    # (Gemini free tier: 30,000), or a single request could never succeed.
+    embedding_max_batch_tokens: int = Field(default=20_000, gt=0)
+    # How many times to wait out a 429 ("retry in N seconds") before giving up.
+    embedding_rate_limit_retries: int = Field(default=6, ge=0)
+    embedding_timeout_seconds: float = Field(default=60.0, gt=0)
+    embedding_max_retries: int = Field(default=3, ge=0)
+
+    @model_validator(mode="after")
+    def _key_is_required(self) -> "EmbeddingSettings":
+        if not self.embedding_api_key:
+            raise ValueError(
+                f"EMBEDDING_PROVIDER={self.embedding_provider} requires EMBEDDING_API_KEY "
+                "(or LLM_API_KEY)"
+            )
+        return self
+
+
 class WorkerSettings(BaseSettings):
     """How the run worker polls the queue and how long a claimed run may go silent."""
 
@@ -183,6 +220,11 @@ def get_worker_settings() -> WorkerSettings:
 @lru_cache
 def get_github_app_settings() -> GitHubAppSettings:
     return GitHubAppSettings()  # type: ignore[call-arg]  # values come from the environment
+
+
+@lru_cache
+def get_embedding_settings() -> EmbeddingSettings:
+    return EmbeddingSettings()  # values come from the environment
 
 
 @lru_cache

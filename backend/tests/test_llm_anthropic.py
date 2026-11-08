@@ -144,3 +144,17 @@ def test_network_failure_is_unavailable():
 
     with pytest.raises(LLMUnavailableError):
         call(make_client(handler))
+
+
+def test_thinking_is_only_sent_when_requested():
+    bodies = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        return httpx2.Response(200, json=message('{"city": "Rome", "population": 1}'))
+
+    client = make_client(handler)
+    call(client)
+    client.generate_structured(system="s", prompt="p", schema=Answer, thinking=True)
+    assert "thinking" not in bodies[0]
+    assert bodies[1]["thinking"] == {"type": "adaptive"}

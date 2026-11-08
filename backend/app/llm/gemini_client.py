@@ -13,6 +13,7 @@ from google.genai import errors, types
 from pydantic import ValidationError
 
 from app.llm.client import (
+    LLMError,
     LLMOutputError,
     LLMRequestError,
     LLMResult,
@@ -25,6 +26,20 @@ from app.llm.client import (
 _TRANSIENT_CLIENT_CODES = frozenset({408, 429})
 
 
+def translate_error(exc: Exception, provider: str) -> LLMError:
+    """Map an SDK or transport exception to our vendor-neutral errors (shared by the
+    generation and embedding adapters)."""
+    if isinstance(exc, errors.ServerError):
+        return LLMUnavailableError(f"{provider}: server error {exc.code}")
+    if isinstance(exc, errors.ClientError):
+        if exc.code in _TRANSIENT_CLIENT_CODES:
+            return LLMUnavailableError(f"{provider}: busy or rate limited")
+        return LLMRequestError(f"{provider}: request rejected ({exc.code})")
+    if isinstance(exc, errors.APIError):
+        return LLMRequestError(f"{provider}: request failed ({exc.code})")
+    return LLMUnavailableError(f"{provider}: connection failed: {exc}")  # httpx errors
+
+
 class GeminiLLMClient:
     def __init__(
         self, client: genai.Client, *, provider: str, model: str, max_output_tokens: int
@@ -34,7 +49,9 @@ class GeminiLLMClient:
         self.model = model
         self._max_output_tokens = max_output_tokens
 
-    def generate_structured(self, *, system: str, prompt: str, schema: type[T]) -> LLMResult[T]:
+    def generate_structured(
+        self, *, system: str, prompt: str, schema: type[T], thinking: bool = False
+    ) -> LLMResult[T]:
         started = time.perf_counter()
         try:
             response = self._client.models.generate_content(
@@ -45,18 +62,17 @@ class GeminiLLMClient:
                     max_output_tokens=self._max_output_tokens,
                     response_mime_type="application/json",
                     response_json_schema=schema.model_json_schema(),
+                    # We never pass tools. Turning the SDK's automatic function calling off
+                    # makes that explicit, so tools added later cannot be run by the SDK
+                    # behind our back.
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    # A zero budget switches thinking off; leaving it unset lets the model
+                    # decide how much to think.
+                    thinking_config=None if thinking else types.ThinkingConfig(thinking_budget=0),
                 ),
             )
-        except errors.ServerError as exc:
-            raise LLMUnavailableError(f"{self.provider}: server error {exc.code}") from exc
-        except errors.ClientError as exc:
-            if exc.code in _TRANSIENT_CLIENT_CODES:
-                raise LLMUnavailableError(f"{self.provider}: busy or rate limited") from exc
-            raise LLMRequestError(f"{self.provider}: request rejected ({exc.code})") from exc
-        except errors.APIError as exc:
-            raise LLMRequestError(f"{self.provider}: request failed ({exc.code})") from exc
-        except httpx.HTTPError as exc:  # timeouts and connection failures
-            raise LLMUnavailableError(f"{self.provider}: connection failed: {exc}") from exc
+        except (errors.APIError, httpx.HTTPError) as exc:  # HTTPError: timeouts, connection
+            raise translate_error(exc, self.provider) from exc
         latency_ms = round((time.perf_counter() - started) * 1000)
 
         feedback = response.prompt_feedback

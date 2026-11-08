@@ -45,6 +45,8 @@ Running only migrations needs just `DATABASE_URL`.
 
 **LLM settings** (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, ...) are only needed when the agents run, not to start the API. Supported: Claude API, Claude on Amazon Bedrock, Claude on Microsoft Foundry, Google Gemini (native API, `LLM_PROVIDER=gemini`), and OpenAI or any OpenAI-compatible endpoint (Azure OpenAI, vLLM) via `LLM_BASE_URL`. See `.env.example` for the variables each needs.
 
+**Code index.** Every run first brings a search index of the repository up to date: files are split into chunks, embedded with Gemini (`EMBEDDING_*` settings, key falls back to `LLM_API_KEY`) and stored in Postgres (pgvector). Only changed files are re-embedded, so a run on an unchanged repo costs two GitHub requests and no embedding calls. Files that look like credentials (`.env`, `*.pem`, key shapes inside files), binaries, lockfiles and vendored code are never read into the index. On Gemini's free tier the first index of a large repository is slow because of its 30,000 tokens-per-minute limit; the indexer waits that limit out automatically.
+
 ### Register the GitHub App (one-time)
 
 One GitHub App handles sign-in and repository access, so you register it once.

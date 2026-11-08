@@ -30,3 +30,12 @@ class TestStatus(enum.StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     ERROR = "error"
+
+
+class IndexStatus(enum.StrEnum):
+    """State of a repository's code index (`repo_connections.index_status`)."""
+
+    NOT_INDEXED = "not_indexed"
+    INDEXING = "indexing"
+    READY = "ready"
+    FAILED = "failed"  # the last attempt failed; a retry resumes from what was saved

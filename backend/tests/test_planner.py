@@ -58,6 +58,12 @@ def test_planner_uses_the_versioned_system_prompt_and_schema():
     call = llm.calls[0]
     assert call["system"] == SYSTEM_PROMPT
     assert call["schema"] is PlannerOutput
+
+
+def test_planner_does_not_use_thinking():
+    llm = FakeLLM(make_output())
+    PlannerAgent(llm)(make_state())
+    assert llm.calls[0]["thinking"] is False
     assert "untrusted" in SYSTEM_PROMPT
 
 

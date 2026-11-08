@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.enums import RunStatus, TicketStatus
 from app.db.models import (
+    EMBEDDING_DIM,
     AgentRun,
     AgentStep,
     CodeChunk,
@@ -48,8 +49,12 @@ def test_run_steps_and_vector_roundtrip(session: Session):
         CodeChunk(
             repo_connection=ticket.repo_connection,
             file_path="a.py",
+            blob_sha="a" * 40,
+            chunk_index=0,
+            start_line=1,
+            end_line=1,
             content="print(1)",
-            embedding=[0.1] * 384,
+            embedding=[0.1] * EMBEDDING_DIM,
         )
     )
     session.flush()
@@ -57,7 +62,7 @@ def test_run_steps_and_vector_roundtrip(session: Session):
     assert run.status == RunStatus.PENDING
     assert run.steps[0].output == {"plan": ["x"]}
     chunk = session.scalars(select(CodeChunk)).one()
-    assert len(chunk.embedding) == 384
+    assert len(chunk.embedding) == EMBEDDING_DIM
 
 
 def test_deleting_repo_cascades(session: Session):

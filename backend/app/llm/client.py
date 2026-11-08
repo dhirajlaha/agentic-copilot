@@ -40,8 +40,15 @@ class LLMClient(Protocol):
     provider: str
     model: str
 
-    def generate_structured(self, *, system: str, prompt: str, schema: type[T]) -> LLMResult[T]:
+    def generate_structured(
+        self, *, system: str, prompt: str, schema: type[T], thinking: bool = False
+    ) -> LLMResult[T]:
         """Ask for an answer that must match `schema` and return it validated.
+
+        `thinking` asks the model to reason before answering. It is off by default: steps
+        that only select or classify (the Planner) are faster and cheaper without it, and
+        steps that write code (the Coder) turn it on. Providers without a switch for it
+        (OpenAI-compatible endpoints) ignore the flag.
 
         Raises an `LLMError` subclass on any failure; never returns unvalidated data.
         """

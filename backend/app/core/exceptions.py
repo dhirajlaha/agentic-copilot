@@ -38,3 +38,7 @@ class RepositoryAccessError(AppError):
 
 class InstallationVerificationError(AppError):
     """An installation id could not be tied to the signed-in user, so it is not trusted."""
+
+
+class IndexBusyError(AppError):
+    """Another worker has been indexing this repository for too long to wait for."""

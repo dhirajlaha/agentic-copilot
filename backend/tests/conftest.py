@@ -30,7 +30,7 @@ os.environ["COOKIE_SECURE"] = "true"
 # Pin every optional setting too, so a developer's local .env can never change test results.
 os.environ["ENABLE_DOCS"] = "false"
 os.environ["SESSION_COOKIE_NAME"] = "__Host-session"
-os.environ["SESSION_TTL_SECONDS"] = "604800"
+os.environ["SESSION_TTL_SECONDS"] = "172800"
 os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
 os.environ["LLM_PROVIDER"] = "anthropic"
 os.environ["LLM_MODEL"] = "test-model"

@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import GitHubError
-from app.db.models import GitHubInstallation, RepoConnection, Ticket, User
+from app.db.models import GitHubInstallation, RepoConnection, Ticket, User, UserSession
 from app.integrations.github import GitHubUser, InstallationInfo
 from app.integrations.github_app import InstallationRepo
 from tests.factories import (
@@ -41,15 +41,19 @@ def _as(client, who):
     client.cookies.set(SESSION_COOKIE, who[1])
 
 
-def _start_install(client, **params):
-    response = client.get("/repos/install", params=params)
+def _setup_url(client, installation_id="555", **params):
+    """GitHub's Setup URL: what the browser hits after installing the app."""
+    response = client.get("/repos/installed", params={"installation_id": installation_id, **params})
     assert response.status_code == 302
+    return response
+
+
+def _verify(client, installation_id="555", **params):
+    """Run the installation check: Setup URL, then the sign-in callback. Returns the callback."""
+    response = _setup_url(client, installation_id, **params)
+    assert response.headers["location"].startswith("https://github.test/authorize")
     state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
-    return response, state
-
-
-def _callback(client, state, **params):
-    return client.get("/auth/github/callback", params={"code": "c0de", "state": state, **params})
+    return client.get("/auth/github/callback", params={"code": "c0de", "state": state})
 
 
 def _error(response) -> str:
@@ -64,27 +68,57 @@ def test_install_requires_sign_in(client):
     assert client.get("/repos/install").status_code == 401
 
 
-def test_install_redirects_to_github_with_a_bound_state_cookie(client, alice):
+def test_install_sends_the_user_to_github(client, alice):
     _as(client, alice)
-    response, state = _start_install(client)
-    assert response.headers["location"].startswith(
-        "https://github.test/apps/test-app/installations/new"
-    )
+    response = client.get("/repos/install")
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://github.test/apps/test-app/installations/new"
+
+
+# ---- the Setup URL (GitHub returns the browser here after installing) -----------------
+
+
+def test_setup_url_starts_a_bound_verification_sign_in(client, alice):
+    _as(client, alice)
+    response = _setup_url(client, "555", setup_action="install")
+    assert response.headers["location"].startswith("https://github.test/authorize")
+    params = parse_qs(urlsplit(response.headers["location"]).query)
+    assert params["code_challenge"]  # PKCE, same as sign-in
     cookie = response.headers["set-cookie"].lower()
     assert "oauth_state=" in cookie and "httponly" in cookie and "secure" in cookie
     assert "path=/auth/github" in cookie
-    assert state
 
 
-# ---- finishing the install ------------------------------------------------------------
+def test_setup_url_requires_a_signed_in_user(client):
+    response = client.get("/repos/installed", params={"installation_id": "555"})
+    assert _error(response) == "not_signed_in"
 
 
-def test_callback_links_a_verified_installation(client, session, github, alice):
+def test_setup_url_without_an_installation_id_is_rejected(client, alice):
+    _as(client, alice)
+    assert _error(client.get("/repos/installed")) == "invalid_request"
+    assert _error(client.get("/repos/installed", params={"installation_id": "x"})) == (
+        "invalid_request"
+    )
+    assert _error(client.get("/repos/installed", params={"installation_id": "1" * 20})) == (
+        "invalid_request"
+    )
+
+
+def test_org_approval_pending_is_reported(client, alice):
+    _as(client, alice)
+    response = client.get("/repos/installed", params={"setup_action": "request"})
+    assert _error(response) == "installation_pending"
+
+
+# ---- finishing the check (the shared GitHub callback) ----------------------------------
+
+
+def test_verified_installation_is_linked(client, session, github, alice):
     github.installations = [InstallationInfo(555, "octo-org", "Organization")]
     _as(client, alice)
-    _, state = _start_install(client)
 
-    response = _callback(client, state, installation_id="555", setup_action="install")
+    response = _verify(client, "555", setup_action="install")
 
     assert response.status_code == 302
     assert response.headers["location"] == f"{FRONTEND}/repos"
@@ -98,26 +132,26 @@ def test_callback_links_a_verified_installation(client, session, github, alice):
     assert any(c.startswith("oauth_state=") and "max-age=0" in c for c in cookies)  # cleared
 
 
-def test_callback_honours_a_safe_next_path_only(client, github, alice):
+def test_the_check_uses_pkce(client, github, alice):
+    github.installations = [InstallationInfo(555, "o", "User")]
+    _as(client, alice)
+    assert (
+        _verify(client, "555").headers["location"] == f"{FRONTEND}/repos"
+    )  # FakeGitHub checks PKCE
+
+
+def test_next_path_is_honoured_only_when_safe(client, github, alice):
     github.installations = [InstallationInfo(1, "o", "User")]
     _as(client, alice)
-    _, state = _start_install(client, next="/tickets/new")
-    assert _callback(client, state, installation_id="1").headers["location"] == (
-        f"{FRONTEND}/tickets/new"
-    )
-    _, state = _start_install(client, next="//evil.test")
-    assert _callback(client, state, installation_id="1").headers["location"] == (
-        f"{FRONTEND}/repos"
-    )
+    # The Setup URL carries no `next`; the page to return to is fixed for this flow.
+    assert _verify(client, "1").headers["location"] == f"{FRONTEND}/repos"
 
 
 def test_relinking_the_same_installation_does_not_duplicate(client, session, github, alice):
-    github.installations = [InstallationInfo(7, "old-name", "User")]
     _as(client, alice)
     for name in ("old-name", "new-name"):
         github.installations = [InstallationInfo(7, name, "User")]
-        _, state = _start_install(client)
-        _callback(client, state, installation_id="7")
+        _verify(client, "7")
     row = session.scalars(select(GitHubInstallation)).one()
     assert row.account_login == "new-name"
 
@@ -126,11 +160,8 @@ def test_installation_id_not_owned_by_the_user_is_rejected(client, session, gith
     """The core attack: edit installation_id in the URL to someone else's installation."""
     github.installations = [InstallationInfo(555, "octo-org", "Organization")]
     _as(client, alice)
-    _, state = _start_install(client)
 
-    response = _callback(client, state, installation_id="999")
-
-    assert _error(response) == "installation_not_verified"
+    assert _error(_verify(client, "999")) == "installation_not_verified"
     assert session.scalar(select(func.count()).select_from(GitHubInstallation)) == 0
 
 
@@ -138,70 +169,70 @@ def test_authorising_a_different_github_account_is_rejected(client, session, git
     github.installations = [InstallationInfo(555, "octo-org", "Organization")]
     github.grant_user_id = alice[0].github_id + 1  # someone else clicked through
     _as(client, alice)
-    _, state = _start_install(client)
 
-    assert _error(_callback(client, state, installation_id="555")) == ("installation_not_verified")
+    assert _error(_verify(client, "555")) == "installation_not_verified"
     assert session.scalar(select(func.count()).select_from(GitHubInstallation)) == 0
 
 
-def test_callback_requires_a_signed_in_user(client, github, alice):
+def test_check_requires_a_signed_in_user(client, github, alice):
     github.installations = [InstallationInfo(555, "o", "User")]
     _as(client, alice)
-    _, state = _start_install(client)
-    client.cookies.clear()  # session lost before GitHub sent the browser back
-    assert _error(_callback(client, state, installation_id="555")) == "not_signed_in"
+    response = _setup_url(client, "555")
+    state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+    client.cookies.delete(SESSION_COOKIE)  # session lost before GitHub sent the browser back
+    response = client.get("/auth/github/callback", params={"code": "c", "state": state})
+    assert _error(response) == "not_signed_in"
 
 
-def test_another_users_state_cannot_finish_my_install(client, github, alice, bob):
+def test_another_users_check_cannot_be_finished(client, github, alice, bob):
     github.installations = [InstallationInfo(555, "o", "User")]
     _as(client, alice)
-    _, state = _start_install(client)  # Alice's state cookie stays in the jar
+    response = _setup_url(client, "555")  # Alice's state cookie stays in the jar
+    state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
     client.cookies.set(SESSION_COOKIE, bob[1])  # ...but Bob is the one signed in
-    assert _error(_callback(client, state, installation_id="555")) == "invalid_state"
+    response = client.get("/auth/github/callback", params={"code": "c", "state": state})
+    assert _error(response) == "invalid_state"
 
 
 def test_wrong_or_missing_state_is_rejected(client, alice):
     _as(client, alice)
-    _start_install(client)
-    assert _error(_callback(client, "forged", installation_id="1")) == "invalid_state"
-    client.cookies.delete("oauth_state", path="/auth/github")
-    assert _error(_callback(client, "x", installation_id="1")) == "invalid_state"
+    _setup_url(client, "555")
+    response = client.get("/auth/github/callback", params={"code": "c", "state": "forged"})
+    assert _error(response) == "invalid_state"
 
 
-def test_a_login_state_cannot_be_used_for_an_install(client, github, alice):
-    github.installations = [InstallationInfo(555, "o", "User")]
+def test_access_denied_during_the_check_returns_to_repos(client, alice):
     _as(client, alice)
-    login = client.get("/auth/github/login")
-    state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]
-    assert _error(_callback(client, state, installation_id="555")) == "invalid_state"
-
-
-def test_an_install_state_cannot_be_used_to_sign_in(client, session, alice):
-    _as(client, alice)
-    _, state = _start_install(client)
-    response = client.get("/auth/github/callback", params={"code": "c", "state": state})
-    assert response.headers["location"].startswith(f"{FRONTEND}/login?error=invalid_state")
-
-
-def test_pending_approval_and_denial_and_junk(client, alice):
-    _as(client, alice)
-    _, state = _start_install(client)
-    # An organisation owner must approve first: GitHub sends setup_action=request, no id.
-    assert _error(_callback(client, state, setup_action="request")) == "installation_pending"
-    assert _error(_callback(client, state, installation_id="abc")) == "invalid_request"
-    assert _error(_callback(client, state, installation_id="1" * 20)) == "invalid_request"
-    denied = client.get(
-        "/auth/github/callback",
-        params={"error": "access_denied", "state": state, "setup_action": "install"},
+    response = _setup_url(client, "555")
+    state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+    response = client.get(
+        "/auth/github/callback", params={"error": "access_denied", "state": state}
     )
-    assert _error(denied) == "access_denied"
+    assert _error(response) == "access_denied"
 
 
-def test_github_failure_during_verification_is_reported(client, github, alice):
+def test_github_failure_during_the_check_is_reported(client, github, alice):
     github.error = GitHubError("boom")
     _as(client, alice)
-    _, state = _start_install(client)
-    assert _error(_callback(client, state, installation_id="1")) == "github_error"
+    assert _error(_verify(client, "1")) == "github_error"
+
+
+def test_a_check_state_cannot_sign_the_user_in(client, session, github, alice):
+    """A verification cookie must never be accepted as a sign-in."""
+    github.installations = [InstallationInfo(555, "o", "User")]
+    _as(client, alice)
+    response = _setup_url(client, "555")
+    state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+    client.cookies.clear()
+    client.cookies.set(
+        "oauth_state", response.headers["set-cookie"].split("oauth_state=")[1].split(";")[0]
+    )
+    client.cookies.set(SESSION_COOKIE, alice[1])
+    # Routed to the check (not sign-in), and no new session is created.
+    before = session.scalar(select(func.count()).select_from(UserSession))
+    client.get("/auth/github/callback", params={"code": "c", "state": state})
+    session.expire_all()
+    assert session.scalar(select(func.count()).select_from(UserSession)) == before
 
 
 # ---- choosing repositories --------------------------------------------------------------

@@ -23,10 +23,13 @@ class FakeGitHub:
         self.grant_user_id: int | None = None
         self.installations: list[InstallationInfo] = []
 
-    def fetch_installations(self, code: str) -> InstallationGrant:
+    def fetch_installations(self, code: str, code_verifier: str) -> InstallationGrant:
         self.codes_seen.append(code)
         if self.error is not None:
             raise self.error
+        digest = hashlib.sha256(code_verifier.encode()).digest()
+        if base64.urlsafe_b64encode(digest).rstrip(b"=").decode() != self.challenges[-1]:
+            raise GitHubError("PKCE verification failed")
         user_id = self.grant_user_id if self.grant_user_id is not None else self.user.id
         return InstallationGrant(github_user_id=user_id, installations=list(self.installations))
 
@@ -95,8 +98,8 @@ class FakeGitHubApp:
         self.unreachable: set[int] = set()
         self.tokens_requested: list[int] = []
 
-    def install_url(self, state: str) -> str:
-        return f"https://github.test/apps/test-app/installations/new?state={state}"
+    def install_url(self) -> str:
+        return "https://github.test/apps/test-app/installations/new"
 
     def installation_token(self, installation_id: int) -> str:
         if self.error is not None:

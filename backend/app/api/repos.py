@@ -9,12 +9,13 @@ from fastapi import APIRouter, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.api.cookies import STATE_COOKIE_NAME, clear_state_cookie, set_state_cookie
-from app.api.deps import CurrentUser, RepoServiceDep, SettingsDep
+from app.api.deps import OAUTH_STATE_SALT, CurrentUser, RepoServiceDep, SettingsDep, UserOrNone
 from app.core.exceptions import (
     GitHubError,
     InstallationVerificationError,
     OAuthStateError,
 )
+from app.core.security import SignedCookieCodec
 from app.db.models import RepoConnection, User
 from app.schemas.repo import (
     AvailableInstallationOut,
@@ -22,6 +23,7 @@ from app.schemas.repo import (
     RepoConnect,
     RepoOut,
 )
+from app.services.repo_service import DEFAULT_NEXT, VERIFY_PURPOSE
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +31,36 @@ router = APIRouter(prefix="/repos", tags=["repos"])
 
 
 @router.get("/install", status_code=status.HTTP_302_FOUND)
-def install(
-    user: CurrentUser,
+def install(user: CurrentUser, repos: RepoServiceDep) -> RedirectResponse:
+    """Send the browser to GitHub to install the app or change its repositories."""
+    return RedirectResponse(repos.install_url(), status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/installed", status_code=status.HTTP_302_FOUND)
+def installed(
+    request: Request,
     repos: RepoServiceDep,
     settings: SettingsDep,
-    next_path: Annotated[str | None, Query(alias="next", max_length=2048)] = None,
+    user: UserOrNone,
+    installation_id: Annotated[str | None, Query(max_length=32)] = None,
+    setup_action: Annotated[str | None, Query(max_length=32)] = None,
 ) -> RedirectResponse:
-    """Send the browser to GitHub to install the app (and choose repositories)."""
-    start = repos.start_install(user, next_path)
+    """GitHub's Setup URL: the browser lands here after installing or changing the app.
+
+    The installation id is only a claim at this point. We remember it in a signed cookie
+    and send the user through a GitHub sign-in that proves they can access it; the shared
+    callback then links it (see `finish_verification`).
+    """
+    if user is None:
+        return _to_repos_error("not_signed_in", settings)
+    if not installation_id:
+        # e.g. an organisation owner still has to approve the installation.
+        code = "installation_pending" if setup_action == "request" else "invalid_request"
+        return _to_repos_error(code, settings)
+    if not installation_id.isdecimal() or len(installation_id) > 18:
+        return _to_repos_error("invalid_request", settings)
+
+    start = repos.start_verification(user, int(installation_id))
     response = RedirectResponse(start.url, status_code=status.HTTP_302_FOUND)
     set_state_cookie(response, settings, start.state_cookie)
     return response
@@ -73,7 +97,19 @@ def disconnect_repo(repo_id: UUID, user: CurrentUser, repos: RepoServiceDep) -> 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def finish_install_redirect(
+def is_verification_state(request: Request, settings: SettingsDep) -> bool:
+    """True when the OAuth state cookie belongs to the installation check (not sign-in)."""
+    value = request.cookies.get(STATE_COOKIE_NAME)
+    if not value:
+        return False
+    codec = SignedCookieCodec(settings.secret_key.get_secret_value(), OAUTH_STATE_SALT)
+    try:
+        return codec.loads(value, settings.oauth_state_ttl_seconds).get("purpose") == VERIFY_PURPOSE
+    except OAuthStateError:
+        return False
+
+
+def finish_verification(
     *,
     request: Request,
     user: User | None,
@@ -81,42 +117,34 @@ def finish_install_redirect(
     settings: SettingsDep,
     code: str | None,
     state: str | None,
-    installation_id: str | None,
     error: str | None,
 ) -> RedirectResponse:
-    """Handle GitHub's redirect after installing the app (it arrives on the shared
-    /auth/github/callback). Every outcome is a redirect to the frontend; details of a
-    failure stay in the logs."""
+    """The shared GitHub callback, for the installation check. Always ends at /repos,
+    with an error code on failure. Details stay in the logs."""
     failure: str | None = None
-    next_path = "/repos"
+    next_path = DEFAULT_NEXT
     if error == "access_denied":
         failure = "access_denied"
     elif user is None:
         failure = "not_signed_in"
     elif error or not code or not state:
         failure = "invalid_request"
-    elif not installation_id:
-        # e.g. an organisation owner must approve the installation first.
-        failure = "installation_pending"
-    elif not installation_id.isdecimal() or len(installation_id) > 18:
-        failure = "invalid_request"
     else:
         try:
-            next_path = repos.complete_install(
+            repos.complete_verification(
                 user=user,
                 code=code,
                 state=state,
                 state_cookie=request.cookies.get(STATE_COOKIE_NAME),
-                installation_id=int(installation_id),
             )
         except OAuthStateError:
-            logger.warning("install callback rejected: invalid state")
+            logger.warning("installation check rejected: invalid state")
             failure = "invalid_state"
         except InstallationVerificationError as exc:
-            logger.warning("install callback rejected: %s", exc)
+            logger.warning("installation check rejected: %s", exc)
             failure = "installation_not_verified"
         except GitHubError as exc:
-            logger.error("GitHub install verification failed: %s", exc)
+            logger.error("GitHub installation check failed: %s", exc)
             failure = "github_error"
 
     if failure is None:
@@ -126,3 +154,8 @@ def finish_install_redirect(
     response = RedirectResponse(target, status_code=status.HTTP_302_FOUND)
     clear_state_cookie(response, settings)
     return response
+
+
+def _to_repos_error(code: str, settings: SettingsDep) -> RedirectResponse:
+    target = f"{settings.frontend_origin}/repos?{urlencode({'error': code})}"
+    return RedirectResponse(target, status_code=status.HTTP_302_FOUND)

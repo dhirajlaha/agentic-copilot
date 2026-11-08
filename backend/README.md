@@ -57,8 +57,9 @@ GitHub > Settings > Developer settings > GitHub Apps > **New GitHub App**, then:
 | Homepage URL | `http://localhost:5173` |
 | Callback URL | `http://localhost:8000/auth/github/callback` (must equal `GITHUB_REDIRECT_URI`) |
 | Expire user authorization tokens | leave on |
-| Request user authorization (OAuth) during installation | **on**. GitHub then returns users to the Callback URL (the Setup URL is disabled), which proves who installed the app |
-| Setup URL | greyed out when the option above is on; leave empty |
+| Request user authorization (OAuth) during installation | **off** |
+| Setup URL | `http://localhost:8000/repos/installed` (GitHub returns users here after installing or changing repositories) |
+| Redirect on update | **on** (so changing the selected repositories also comes back to the app) |
 | Webhook > Active | **off** (nothing receives webhooks yet) |
 | Account permissions > Email addresses | **Read-only** |
 | Repository permissions | **Contents, Issues, Pull requests: Read-only** (Metadata is added automatically) |

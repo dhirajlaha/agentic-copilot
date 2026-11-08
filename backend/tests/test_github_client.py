@@ -154,20 +154,19 @@ def test_fetch_installations_returns_user_and_installations():
     seen: list[str] = []
     grant = make_client(
         installations_handler([[installation(1), installation(2)]], seen)
-    ).fetch_installations("c0de")
+    ).fetch_installations("c0de", "ver1fier")
     assert grant.github_user_id == 7
     assert [(i.id, i.account_login, i.account_type) for i in grant.installations] == [
         (1, "acct1", "Organization"),
         (2, "acct2", "Organization"),
     ]
-    # The install flow has no PKCE challenge, so no verifier is sent.
-    assert "code_verifier" not in seen[0] and "client_secret=secret" in seen[0]
+    assert "code_verifier=ver1fier" in seen[0] and "client_secret=secret" in seen[0]
 
 
 def test_fetch_installations_follows_pages():
     first = [installation(n) for n in range(100)]
     grant = make_client(installations_handler([first, [installation(500)]])).fetch_installations(
-        "c"
+        "c", "v"
     )
     assert len(grant.installations) == 101
 
@@ -181,4 +180,4 @@ def test_fetch_installations_rejects_malformed_responses():
         return httpx.Response(200, json={"installations": [{"id": 1}]})
 
     with pytest.raises(GitHubError):
-        make_client(handler).fetch_installations("c")
+        make_client(handler).fetch_installations("c", "v")

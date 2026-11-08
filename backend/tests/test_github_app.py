@@ -27,10 +27,10 @@ def make_client(handler) -> GitHubAppClient:
     )
 
 
-def test_install_url_carries_state():
-    url = httpx.URL(make_client(lambda r: httpx.Response(500)).install_url("st&te"))
+def test_install_url_is_the_apps_install_page():
+    url = httpx.URL(make_client(lambda r: httpx.Response(500)).install_url())
     assert url.host == "github.com" and url.path == "/apps/my-app/installations/new"
-    assert url.params["state"] == "st&te"
+    assert not url.params  # no state: the redirect comes back via the Setup URL
 
 
 def test_app_jwt_claims_follow_githubs_rules():

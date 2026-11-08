@@ -5,7 +5,6 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Protocol
-from urllib.parse import urlencode
 
 import httpx
 import jwt
@@ -38,7 +37,7 @@ class InstallationTokenSource(Protocol):
 class GitHubApp(Protocol):
     """What the services need from the GitHub App. Tests provide a fake."""
 
-    def install_url(self, state: str) -> str: ...
+    def install_url(self) -> str: ...
 
     def installation_token(self, installation_id: int) -> str: ...
 
@@ -54,10 +53,10 @@ class GitHubAppClient:
         self._slug = slug
         self._http = http
 
-    def install_url(self, state: str) -> str:
-        """Where to send the user to install the app. GitHub returns `state` untouched."""
-        query = urlencode({"state": state})
-        return f"https://github.com/apps/{self._slug}/installations/new?{query}"
+    def install_url(self) -> str:
+        """Where to send the user to install the app. Its redirect comes back through the
+        App's Setup URL, not through our state, so no state is attached."""
+        return f"https://github.com/apps/{self._slug}/installations/new"
 
     def _app_jwt(self) -> str:
         now = int(time.time())

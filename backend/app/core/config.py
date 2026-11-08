@@ -97,7 +97,9 @@ class Settings(BaseSettings):
     # The __Host- prefix makes browsers refuse the cookie unless it is Secure, Path=/ and
     # has no Domain, so a sibling subdomain cannot overwrite ("toss") our session cookie.
     session_cookie_name: str = "__Host-session"
-    session_ttl_seconds: int = Field(default=7 * 24 * 3600, gt=0)
+    # Absolute lifetime from sign-in (no sliding renewal). Kept short because the browser
+    # cookie lives as long as the session, and a laptop can stay open for days.
+    session_ttl_seconds: int = Field(default=2 * 24 * 3600, gt=0)
     oauth_state_ttl_seconds: int = Field(default=600, gt=0)
     # Secure cookies are only sent over HTTPS (browsers exempt http://localhost).
     cookie_secure: bool = True

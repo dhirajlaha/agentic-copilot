@@ -48,7 +48,7 @@ class GitHubOAuth(Protocol):
 
     def fetch_user(self, code: str, code_verifier: str) -> GitHubUser: ...
 
-    def fetch_installations(self, code: str) -> InstallationGrant: ...
+    def fetch_installations(self, code: str, code_verifier: str) -> InstallationGrant: ...
 
 
 class GitHubOAuthClient:
@@ -105,12 +105,11 @@ class GitHubOAuthClient:
             id=user_id, login=login, email=email, avatar_url=profile.get("avatar_url")
         )
 
-    def fetch_installations(self, code: str) -> InstallationGrant:
-        """For the install flow: exchange the code and list the installations the user can
-        access. Used to prove that an `installation_id` in a redirect really belongs to
-        the person who came back. GitHub starts that flow itself, so there is no PKCE
-        challenge to match; the client secret authenticates this exchange instead."""
-        token = self._exchange_code(code, None)
+    def fetch_installations(self, code: str, code_verifier: str) -> InstallationGrant:
+        """For the install flow: exchange the code (with PKCE) and list the installations
+        the user can access. Used to prove that an `installation_id` from a redirect really
+        belongs to the person who came back."""
+        token = self._exchange_code(code, code_verifier)
         headers = self._api_headers(token)
         profile = self._get_json(f"{API_URL}/user", headers)
         try:
@@ -147,7 +146,7 @@ class GitHubOAuthClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
-    def _exchange_code(self, code: str, code_verifier: str | None) -> str:
+    def _exchange_code(self, code: str, code_verifier: str) -> str:
         try:
             response = self._http.post(
                 TOKEN_URL,
@@ -156,7 +155,7 @@ class GitHubOAuthClient:
                     "client_secret": self._client_secret,
                     "code": code,
                     "redirect_uri": self._redirect_uri,
-                    **({"code_verifier": code_verifier} if code_verifier else {}),
+                    "code_verifier": code_verifier,
                 },
                 headers={"Accept": "application/json"},
             )

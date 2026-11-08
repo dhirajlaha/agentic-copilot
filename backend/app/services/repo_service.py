@@ -15,7 +15,7 @@ from app.core.exceptions import (
     OAuthStateError,
     RepositoryAccessError,
 )
-from app.core.security import SignedCookieCodec, generate_token, safe_next_path
+from app.core.security import SignedCookieCodec, generate_pkce_pair, generate_token, safe_next_path
 from app.db.models import GitHubInstallation, RepoConnection, User
 from app.integrations.github import GitHubOAuth
 from app.integrations.github_app import GitHubApp, InstallationRepo
@@ -25,7 +25,7 @@ from app.repositories.repo_connection_repository import RepoConnectionRepository
 
 logger = logging.getLogger(__name__)
 
-INSTALL_PURPOSE = "install"
+VERIFY_PURPOSE = "verify_install"
 DEFAULT_NEXT = "/repos"
 
 
@@ -37,8 +37,8 @@ def _return_path(path: object) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class InstallStart:
-    url: str
+class VerifyStart:
+    url: str  # GitHub sign-in that proves the user can access the installation
     state_cookie: str
 
 
@@ -69,46 +69,51 @@ class RepoService:
         self._state_codec = state_codec
         self._state_ttl_seconds = state_ttl_seconds
 
-    def start_install(self, user: User, next_path: str | None) -> InstallStart:
+    def install_url(self) -> str:
+        """Where to send the user to install the app or change its repositories."""
+        return self._app.install_url()
+
+    def start_verification(self, user: User, installation_id: int) -> VerifyStart:
+        """Step 2 of connecting an installation: prove this user can access it.
+
+        GitHub sends the browser back to us with an `installation_id` in the URL, which
+        anyone can edit. So we only remember the id here, in a signed cookie bound to the
+        user, and send them through a normal GitHub sign-in (PKCE, as for login). The
+        callback then checks the id against what GitHub says the user can access.
+        """
         state = generate_token()
+        verifier, challenge = generate_pkce_pair()
         cookie = self._state_codec.dumps(
             {
-                "purpose": INSTALL_PURPOSE,
+                "purpose": VERIFY_PURPOSE,
                 "state": state,
-                # Bound to the user who started it: another account cannot finish it.
+                "verifier": verifier,
                 "uid": str(user.id),
-                "next": _return_path(next_path),
+                "installation_id": installation_id,
             }
         )
-        return InstallStart(self._app.install_url(state), cookie)
+        return VerifyStart(self._oauth.authorization_url(state, challenge), cookie)
 
-    def complete_install(
-        self,
-        *,
-        user: User,
-        code: str,
-        state: str,
-        state_cookie: str | None,
-        installation_id: int,
-    ) -> str:
-        """Verify the redirect, record the installation, return the page to show next.
-
-        `installation_id` arrives in a URL anyone can edit, so it is trusted only after
-        GitHub confirms, with a token for the person who authorised, that they can
-        access that installation.
-        """
+    def complete_verification(
+        self, *, user: User, code: str, state: str, state_cookie: str | None
+    ) -> None:
+        """Finish step 2: confirm the installation belongs to this user, then link it."""
         if not state_cookie:
             raise OAuthStateError("Missing state cookie")
         payload = self._state_codec.loads(state_cookie, self._state_ttl_seconds)
         expected = payload.get("state")
-        if payload.get("purpose") != INSTALL_PURPOSE:
+        if payload.get("purpose") != VERIFY_PURPOSE:
             raise OAuthStateError("State was issued for a different flow")
         if not isinstance(expected, str) or not secrets.compare_digest(expected, state):
             raise OAuthStateError("State mismatch")
         if payload.get("uid") != str(user.id):
             raise OAuthStateError("State belongs to a different user")
+        verifier = payload.get("verifier")
+        installation_id = payload.get("installation_id")
+        if not isinstance(verifier, str) or not isinstance(installation_id, int):
+            raise OAuthStateError("Malformed verification state")
 
-        grant = self._oauth.fetch_installations(code)
+        grant = self._oauth.fetch_installations(code, verifier)
         if grant.github_user_id != user.github_id:
             raise InstallationVerificationError("Authorised GitHub account does not match")
         match = next((i for i in grant.installations if i.id == installation_id), None)
@@ -123,7 +128,6 @@ class RepoService:
         )
         self._session.commit()
         logger.info("installation linked", extra={"user_id": str(user.id)})
-        return _return_path(payload.get("next"))
 
     def list_available(self, user: User) -> list[AvailableInstallation]:
         result = []

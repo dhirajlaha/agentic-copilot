@@ -2,12 +2,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, CreatedAt, UuidPk, status_check
-from app.db.enums import ACTIVE_RUN_STATUSES, RunStatus, TestStatus
+from app.db.enums import ACTIVE_RUN_STATUSES, PublicationStatus, RunStatus, TestStatus
 from app.db.models.ticket import Ticket
 
 _ACTIVE = ", ".join(f"'{s.value}'" for s in ACTIVE_RUN_STATUSES)
@@ -20,6 +20,14 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (
         status_check("status", RunStatus, "ck_agent_runs_status"),
+        # NULL (never published) or one of the publication states.
+        CheckConstraint(
+            "publication_status IS NULL OR publication_status IN "
+            + "("
+            + ", ".join(f"'{m.value}'" for m in PublicationStatus)
+            + ")",
+            name="ck_agent_runs_publication_status",
+        ),
         # At most one pending/running run per ticket, enforced by the database so two
         # simultaneous "run" clicks cannot both start one.
         Index(
@@ -51,6 +59,16 @@ class AgentRun(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why the run failed, safe to show to the user (no internals or secrets).
     error: Mapped[str | None] = mapped_column(Text)
+
+    # Publishing the Coder's patch as a draft pull request (an explicit user action).
+    publication_status: Mapped[str | None] = mapped_column(String(32))
+    branch_name: Mapped[str | None] = mapped_column(Text)
+    pull_request_number: Mapped[int | None] = mapped_column(Integer)
+    pull_request_url: Mapped[str | None] = mapped_column(Text)
+    # When the current publish attempt began; lets a crashed attempt be taken over later.
+    publish_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    publish_error: Mapped[str | None] = mapped_column(Text)  # safe to show to the user
 
     ticket: Mapped[Ticket] = relationship(back_populates="runs")
     steps: Mapped[list["AgentStep"]] = relationship(

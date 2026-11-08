@@ -39,3 +39,12 @@ class IndexStatus(enum.StrEnum):
     INDEXING = "indexing"
     READY = "ready"
     FAILED = "failed"  # the last attempt failed; a retry resumes from what was saved
+
+
+class PublicationStatus(enum.StrEnum):
+    """Whether a run's patch has been published as a pull request
+    (`agent_runs.publication_status`; NULL until someone asks to publish)."""
+
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    FAILED = "failed"  # see agent_runs.publish_error; publishing again is allowed

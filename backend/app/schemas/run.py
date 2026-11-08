@@ -15,6 +15,13 @@ class RunOut(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     error: str | None
+    # Set once the patch has been published as a draft pull request.
+    publication_status: str | None
+    branch_name: str | None
+    pull_request_number: int | None
+    pull_request_url: str | None
+    published_at: datetime | None
+    publish_error: str | None
 
 
 class StepOut(BaseModel):

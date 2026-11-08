@@ -300,3 +300,36 @@ def default_coder_output():
         ],
         open_questions=[],
     )
+
+
+class FakeFileReader:
+    """GitHubFileReader stand-in: read_text(repo, ref, path, token) over {path: text}."""
+
+    def __init__(self, files: dict[str, Any] | None = None) -> None:
+        self.files = dict(files or {})
+        self.reads: list[tuple[str, str, str, str]] = []
+
+    def read_text(self, repo_full_name: str, ref: str, path: str, token: str):
+        self.reads.append((repo_full_name, ref, path, token))
+        return self.files.get(path)
+
+
+class FakePublisher:
+    """PullRequestPublisher stand-in: records the call, returns a canned pull request."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def publish(self, **kwargs: Any):
+        from app.integrations.github_publish import PublishedPullRequest
+
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        n = len(self.calls)
+        return PublishedPullRequest(
+            branch=kwargs["branch"],
+            number=40 + n,
+            url=f"https://github.com/{kwargs['repo_full_name']}/pull/{40 + n}",
+        )

@@ -2,10 +2,10 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.enums import RunStatus
+from app.db.enums import PublicationStatus, RunStatus
 from app.db.models import AgentRun, AgentStep, Ticket
 
 
@@ -77,6 +77,56 @@ class AgentRunRepository:
             .returning(AgentRun.ticket_id)
         )
         return list(result.scalars())
+
+    # -- publishing a run's patch as a pull request -------------------------------------
+
+    def claim_publication(self, run_id: UUID, now: datetime, stale_before: datetime) -> bool:
+        """Take the right to publish this run, unless it is already published or another
+        request is publishing it right now. One atomic UPDATE, so two clicks cannot both
+        create a pull request. A claim older than `stale_before` (a crashed attempt) can
+        be taken over."""
+        claimed = self._session.execute(
+            update(AgentRun)
+            .where(
+                AgentRun.id == run_id,
+                or_(
+                    AgentRun.publication_status.is_(None),
+                    AgentRun.publication_status == PublicationStatus.FAILED,
+                    (AgentRun.publication_status == PublicationStatus.PUBLISHING)
+                    & (AgentRun.publish_started_at < stale_before),
+                ),
+            )
+            .values(
+                publication_status=PublicationStatus.PUBLISHING,
+                publish_started_at=now,
+                publish_error=None,
+            )
+            .returning(AgentRun.id)
+        ).first()
+        return claimed is not None
+
+    def mark_published(
+        self, run_id: UUID, *, branch: str, number: int, url: str, now: datetime
+    ) -> None:
+        self._session.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id)
+            .values(
+                publication_status=PublicationStatus.PUBLISHED,
+                branch_name=branch,
+                pull_request_number=number,
+                pull_request_url=url,
+                published_at=now,
+                publish_error=None,
+            )
+        )
+
+    def mark_publication_failed(self, run_id: UUID, message: str) -> None:
+        self._session.execute(
+            update(AgentRun)
+            .where(AgentRun.id == run_id)
+            .values(publication_status=PublicationStatus.FAILED, publish_error=message)
+        )
 
 
 class AgentStepRepository:

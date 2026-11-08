@@ -14,6 +14,8 @@ from app.db.models import User
 from app.db.session import get_session
 from app.integrations.github import GitHubOAuth, GitHubOAuthClient
 from app.integrations.github_app import GitHubApp, GitHubAppClient
+from app.integrations.github_files import GitHubFileReader
+from app.integrations.github_publish import GitHubPullRequestPublisher
 from app.repositories.github_installation_repository import GitHubInstallationRepository
 from app.repositories.repo_connection_repository import RepoConnectionRepository
 from app.repositories.run_repository import AgentRunRepository
@@ -21,6 +23,7 @@ from app.repositories.session_repository import UserSessionRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
+from app.services.publish_service import PublishService
 from app.services.repo_service import RepoService
 from app.services.run_service import RunService
 from app.services.ticket_service import TicketService
@@ -117,6 +120,20 @@ def get_ticket_service(session: SessionDep) -> TicketService:
     return TicketService(session, TicketRepository(session), RepoConnectionRepository(session))
 
 
+def get_publish_service(
+    session: SessionDep,
+    github_app: Annotated[GitHubApp, Depends(get_github_app)],
+    http: Annotated[httpx.Client, Depends(get_http_client)],
+) -> PublishService:
+    return PublishService(
+        session=session,
+        runs=AgentRunRepository(session),
+        tokens=github_app,
+        files=GitHubFileReader(http),
+        publisher=GitHubPullRequestPublisher(http),
+    )
+
+
 def get_run_service(session: SessionDep) -> RunService:
     return RunService(session, TicketRepository(session), AgentRunRepository(session))
 
@@ -124,6 +141,7 @@ def get_run_service(session: SessionDep) -> RunService:
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 TicketServiceDep = Annotated[TicketService, Depends(get_ticket_service)]
 RunServiceDep = Annotated[RunService, Depends(get_run_service)]
+PublishServiceDep = Annotated[PublishService, Depends(get_publish_service)]
 RepoServiceDep = Annotated[RepoService, Depends(get_repo_service)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 UserOrNone = Annotated[User | None, Depends(get_optional_user)]

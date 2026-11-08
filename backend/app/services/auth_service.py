@@ -20,6 +20,8 @@ from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
+LOGIN_PURPOSE = "login"
+
 
 @dataclass(frozen=True, slots=True)
 class LoginStart:
@@ -60,7 +62,12 @@ class AuthService:
         state = generate_token()
         verifier, challenge = generate_pkce_pair()
         state_cookie = self._state_codec.dumps(
-            {"state": state, "verifier": verifier, "next": safe_next_path(next_path)}
+            {
+                "purpose": LOGIN_PURPOSE,
+                "state": state,
+                "verifier": verifier,
+                "next": safe_next_path(next_path),
+            }
         )
         return LoginStart(self._github.authorization_url(state, challenge), state_cookie)
 
@@ -76,6 +83,9 @@ class AuthService:
         if not state_cookie:
             raise OAuthStateError("Missing state cookie")
         payload = self._state_codec.loads(state_cookie, self._state_ttl_seconds)
+        # A state cookie minted for another flow (e.g. installing the app) must not work here.
+        if payload.get("purpose") != LOGIN_PURPOSE:
+            raise OAuthStateError("State was issued for a different flow")
         expected = payload.get("state")
         if not isinstance(expected, str) or not secrets.compare_digest(expected, state):
             raise OAuthStateError("State mismatch")

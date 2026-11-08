@@ -34,3 +34,7 @@ class ConflictError(AppError):
 class RepositoryAccessError(AppError):
     """The repository could not be read (missing, private without access, too large,
     or GitHub rate limits)."""
+
+
+class InstallationVerificationError(AppError):
+    """An installation id could not be tied to the signed-in user, so it is not trusted."""

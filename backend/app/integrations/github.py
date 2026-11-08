@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105  (a URL, not a secret)
 API_URL = "https://api.github.com"
+PAGE_SIZE = 100
+MAX_PAGES = 10  # a hard stop so a misbehaving response can never loop forever
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,12 +26,29 @@ class GitHubUser:
     avatar_url: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class InstallationInfo:
+    id: int
+    account_login: str
+    account_type: str  # "User" or "Organization"
+
+
+@dataclass(frozen=True, slots=True)
+class InstallationGrant:
+    """Who authorised, and which App installations that person can access."""
+
+    github_user_id: int
+    installations: list[InstallationInfo]
+
+
 class GitHubOAuth(Protocol):
     """What the auth service needs from GitHub. Tests provide a fake implementation."""
 
     def authorization_url(self, state: str, code_challenge: str) -> str: ...
 
     def fetch_user(self, code: str, code_verifier: str) -> GitHubUser: ...
+
+    def fetch_installations(self, code: str) -> InstallationGrant: ...
 
 
 class GitHubOAuthClient:
@@ -67,11 +86,7 @@ class GitHubOAuthClient:
         stored or logged.
         """
         token = self._exchange_code(code, code_verifier)
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
+        headers = self._api_headers(token)
         profile = self._get_json(f"{API_URL}/user", headers)
         try:
             user_id, login = int(profile["id"]), str(profile["login"])
@@ -90,7 +105,49 @@ class GitHubOAuthClient:
             id=user_id, login=login, email=email, avatar_url=profile.get("avatar_url")
         )
 
-    def _exchange_code(self, code: str, code_verifier: str) -> str:
+    def fetch_installations(self, code: str) -> InstallationGrant:
+        """For the install flow: exchange the code and list the installations the user can
+        access. Used to prove that an `installation_id` in a redirect really belongs to
+        the person who came back. GitHub starts that flow itself, so there is no PKCE
+        challenge to match; the client secret authenticates this exchange instead."""
+        token = self._exchange_code(code, None)
+        headers = self._api_headers(token)
+        profile = self._get_json(f"{API_URL}/user", headers)
+        try:
+            user_id = int(profile["id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise GitHubError("Unexpected profile response from GitHub") from exc
+
+        installations: list[InstallationInfo] = []
+        for page in range(1, MAX_PAGES + 1):
+            body = self._get_json(
+                f"{API_URL}/user/installations?per_page={PAGE_SIZE}&page={page}", headers
+            )
+            try:
+                items = body["installations"]
+                installations += [
+                    InstallationInfo(
+                        id=int(item["id"]),
+                        account_login=str(item["account"]["login"]),
+                        account_type=str(item["account"].get("type", "User")),
+                    )
+                    for item in items
+                ]
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                raise GitHubError("Unexpected installations response from GitHub") from exc
+            if len(items) < PAGE_SIZE:
+                break
+        return InstallationGrant(github_user_id=user_id, installations=installations)
+
+    @staticmethod
+    def _api_headers(token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def _exchange_code(self, code: str, code_verifier: str | None) -> str:
         try:
             response = self._http.post(
                 TOKEN_URL,
@@ -99,7 +156,7 @@ class GitHubOAuthClient:
                     "client_secret": self._client_secret,
                     "code": code,
                     "redirect_uri": self._redirect_uri,
-                    "code_verifier": code_verifier,
+                    **({"code_verifier": code_verifier} if code_verifier else {}),
                 },
                 headers={"Accept": "application/json"},
             )

@@ -8,8 +8,12 @@ rolled back, so tests are isolated and leave nothing behind.
 """
 
 import os
+import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 # Must be set before any `app` import: settings are read from the environment.
 TEST_DB_NAME = "copilot_test"
@@ -31,6 +35,19 @@ os.environ["OAUTH_STATE_TTL_SECONDS"] = "600"
 os.environ["LLM_PROVIDER"] = "anthropic"
 os.environ["LLM_MODEL"] = "test-model"
 os.environ["LLM_API_KEY"] = "test-llm-key"
+# A throwaway RSA key stands in for the GitHub App's private key.
+TEST_APP_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_KEY_DIR = Path(tempfile.mkdtemp(prefix="copilot-test-key-"))
+TEST_APP_KEY_PATH = _KEY_DIR / "app.pem"
+TEST_APP_KEY_PATH.write_bytes(
+    TEST_APP_KEY.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+)
+os.environ["GITHUB_APP_SLUG"] = "test-app"
+os.environ["GITHUB_APP_PRIVATE_KEY_PATH"] = str(TEST_APP_KEY_PATH)
 for _name in ("LLM_BASE_URL", "AWS_REGION", "FOUNDRY_RESOURCE"):
     os.environ.pop(_name, None)
 
@@ -41,10 +58,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import Connection, create_engine, text  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
-from app.api.deps import get_github_oauth  # noqa: E402
+from app.api.deps import get_github_app, get_github_oauth  # noqa: E402
 from app.db.session import get_engine, get_session  # noqa: E402
 from app.main import create_app  # noqa: E402
-from tests.fakes import FakeGitHub  # noqa: E402
+from tests.fakes import FakeGitHub, FakeGitHubApp  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -98,8 +115,16 @@ def github() -> FakeGitHub:
 
 
 @pytest.fixture
+def github_app() -> FakeGitHubApp:
+    return FakeGitHubApp()
+
+
+@pytest.fixture
 def client(
-    session: Session, session_factory: Callable[[], Session], github: FakeGitHub
+    session: Session,
+    session_factory: Callable[[], Session],
+    github: FakeGitHub,
+    github_app: FakeGitHubApp,
 ) -> Iterator[TestClient]:
     app = create_app()
 
@@ -111,5 +136,6 @@ def client(
 
     app.dependency_overrides[get_session] = session_per_request
     app.dependency_overrides[get_github_oauth] = lambda: github
+    app.dependency_overrides[get_github_app] = lambda: github_app
     # https base URL so the client's cookie jar accepts and returns Secure cookies.
     yield TestClient(app, base_url="https://api.test", follow_redirects=False)

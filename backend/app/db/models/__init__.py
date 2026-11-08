@@ -4,6 +4,7 @@ from app.db.base import Base
 from app.db.models.agent import AgentRun, AgentStep, TestResult
 from app.db.models.benchmark import BenchmarkRun
 from app.db.models.code_chunk import EMBEDDING_DIM, CodeChunk
+from app.db.models.github_installation import GitHubInstallation
 from app.db.models.repo_connection import RepoConnection
 from app.db.models.ticket import Ticket
 from app.db.models.user import User, UserSession
@@ -15,6 +16,7 @@ __all__ = [
     "Base",
     "BenchmarkRun",
     "CodeChunk",
+    "GitHubInstallation",
     "RepoConnection",
     "TestResult",
     "Ticket",

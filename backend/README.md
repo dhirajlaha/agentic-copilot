@@ -35,17 +35,19 @@ Copy `.env.example` to `.env` and fill it in. **The API refuses to start if a re
 | `SECRET_KEY` | Signs the OAuth state cookie. At least 32 characters: `openssl rand -hex 32` |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | From your GitHub App (below) |
 | `GITHUB_REDIRECT_URI` | Must exactly match the app's callback URL |
+| `GITHUB_APP_SLUG` | The last part of the app's public URL, `https://github.com/apps/<slug>` |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | Path to the app's `.pem` private key, kept **outside the repo**. Checked at startup |
 | `FRONTEND_URL` | Where users land after sign-in; also the only allowed CORS origin |
 | `COOKIE_SECURE` | `true` by default (required by the `__Host-` cookie prefix) |
 | `ENABLE_DOCS` | `false` by default. Set `true` locally for Swagger UI at `/docs` |
 
 Running only migrations needs just `DATABASE_URL`.
 
-**LLM settings** (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, ...) are only needed when the agents run, not to start the API. Supported: Claude API, Claude on Amazon Bedrock, Claude on Microsoft Foundry, and OpenAI or any OpenAI-compatible endpoint (Azure OpenAI, Gemini, vLLM) via `LLM_BASE_URL`. See `.env.example` for the variables each needs.
+**LLM settings** (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, ...) are only needed when the agents run, not to start the API. Supported: Claude API, Claude on Amazon Bedrock, Claude on Microsoft Foundry, Google Gemini (native API, `LLM_PROVIDER=gemini`), and OpenAI or any OpenAI-compatible endpoint (Azure OpenAI, vLLM) via `LLM_BASE_URL`. See `.env.example` for the variables each needs.
 
 ### Register the GitHub App (one-time)
 
-One GitHub App handles sign-in now and repo access later (Week 2), so you register it once.
+One GitHub App handles sign-in and repository access, so you register it once.
 
 GitHub > Settings > Developer settings > GitHub Apps > **New GitHub App**, then:
 
@@ -55,15 +57,16 @@ GitHub > Settings > Developer settings > GitHub Apps > **New GitHub App**, then:
 | Homepage URL | `http://localhost:5173` |
 | Callback URL | `http://localhost:8000/auth/github/callback` (must equal `GITHUB_REDIRECT_URI`) |
 | Expire user authorization tokens | leave on |
-| Request user authorization (OAuth) during installation | off |
+| Request user authorization (OAuth) during installation | **on**. GitHub then returns users to the Callback URL (the Setup URL is disabled), which proves who installed the app |
+| Setup URL | greyed out when the option above is on; leave empty |
 | Webhook > Active | **off** (nothing receives webhooks yet) |
 | Account permissions > Email addresses | **Read-only** |
-| Repository permissions | none for now |
+| Repository permissions | **Contents, Issues, Pull requests: Read-only** (Metadata is added automatically) |
 | Where can this GitHub App be installed? | **Any account** |
 
 "Any account" matters: GitHub only lets members of the owning organisation authorize a *private* app, so with "Only on this account" nobody else could sign in.
 
-Then on the app's page: copy the **Client ID**, click **Generate a new client secret**, and put both in `backend/.env`. Ignore the App ID and private key until Week 2. Never commit any of these. Use a separate GitHub App per deployed environment.
+Then on the app's page: copy the **Client ID**, click **Generate a new client secret**, and put both in `backend/.env`. Also click **Generate a private key**, save the `.pem` **outside the repo** (`secrets/` is git-ignored if you keep it under the project), and set `GITHUB_APP_PRIVATE_KEY_PATH`. The app signs its JWT with the client ID, so the numeric App ID is not needed. Never commit any of these. Use a separate GitHub App per deployed environment.
 
 Local HTTPS note: the session cookie uses the `__Host-` prefix, which needs `Secure`. Chrome and Firefox accept it on `http://localhost`; Safari does not, so use Chrome or Firefox for local sign-in.
 

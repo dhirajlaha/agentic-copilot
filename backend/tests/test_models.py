@@ -12,6 +12,7 @@ from app.db.models import (
     AgentRun,
     AgentStep,
     CodeChunk,
+    GitHubInstallation,
     RepoConnection,
     Ticket,
     User,
@@ -20,7 +21,10 @@ from app.db.models import (
 
 def _make_ticket(session: Session) -> Ticket:
     user = User(github_id=1, github_login="dev", email="dev@example.com")
-    repo = RepoConnection(user=user, repo_full_name="octo/demo")
+    installation = GitHubInstallation(
+        user=user, installation_id=1, account_login="octo", account_type="User"
+    )
+    repo = RepoConnection(user=user, github_installation=installation, repo_full_name="octo/demo")
     ticket = Ticket(user=user, repo_connection=repo, title="Fix bug", description="details")
     session.add(ticket)
     session.flush()
@@ -71,4 +75,24 @@ def test_invalid_status_is_rejected_by_database(session: Session):
     ticket = _make_ticket(session)
     session.add(AgentRun(ticket=ticket, status="runing"))
     with pytest.raises(IntegrityError, match="ck_agent_runs_status"):
+        session.flush()
+
+
+def test_an_installation_is_linked_once_per_user(session: Session):
+    ticket = _make_ticket(session)
+    session.add(
+        GitHubInstallation(
+            user_id=ticket.user_id, installation_id=1, account_login="octo", account_type="User"
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_an_installation_with_connected_repos_cannot_be_deleted(session: Session):
+    """RESTRICT: dropping the link must never silently delete repos, tickets and runs."""
+    ticket = _make_ticket(session)
+    installation = ticket.repo_connection.github_installation
+    session.delete(installation)
+    with pytest.raises(IntegrityError):
         session.flush()

@@ -4,7 +4,7 @@ from itertools import count
 from sqlalchemy.orm import Session
 
 from app.core.security import generate_token, hash_token
-from app.db.models import RepoConnection, Ticket, User, UserSession
+from app.db.models import GitHubInstallation, RepoConnection, Ticket, User, UserSession
 
 SESSION_COOKIE = "__Host-session"  # default session_cookie_name
 _ids = count(1000)
@@ -18,8 +18,35 @@ def create_user(session: Session, login: str | None = None) -> User:
     return user
 
 
-def create_repo(session: Session, user: User, name: str | None = None) -> RepoConnection:
-    repo = RepoConnection(user_id=user.id, repo_full_name=name or f"octo/repo{next(_ids)}")
+def create_installation(
+    session: Session,
+    user: User,
+    installation_id: int | None = None,
+    account_login: str = "octo-org",
+) -> GitHubInstallation:
+    installation = GitHubInstallation(
+        user_id=user.id,
+        installation_id=installation_id or next(_ids),
+        account_login=account_login,
+        account_type="Organization",
+    )
+    session.add(installation)
+    session.flush()
+    return installation
+
+
+def create_repo(
+    session: Session,
+    user: User,
+    name: str | None = None,
+    installation: GitHubInstallation | None = None,
+) -> RepoConnection:
+    installation = installation or create_installation(session, user)
+    repo = RepoConnection(
+        user_id=user.id,
+        github_installation_id=installation.id,
+        repo_full_name=name or f"octo/repo{next(_ids)}",
+    )
     session.add(repo)
     session.flush()
     return repo

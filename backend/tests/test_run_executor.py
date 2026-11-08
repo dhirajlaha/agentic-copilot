@@ -12,7 +12,7 @@ from app.db.models import AgentRun, AgentStep, Ticket
 from app.llm.client import LLMUnavailableError
 from app.services.run_executor import LEASE_EXPIRED_ERROR, RunExecutor
 from tests.factories import create_repo, create_ticket, create_user
-from tests.fakes import FakeLLM, FakeRepoFiles
+from tests.fakes import FakeGitHubApp, FakeLLM, FakeRepoFiles
 
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 
@@ -25,11 +25,12 @@ def planner_output() -> PlannerOutput:
     )
 
 
-def make_executor(session_factory, llm=None, repo_files=None, clock=lambda: NOW):
+def make_executor(session_factory, llm=None, repo_files=None, tokens=None, clock=lambda: NOW):
     return RunExecutor(
         session_factory=session_factory,
         graph=build_graph(llm or FakeLLM(planner_output())),
         repo_files=repo_files or FakeRepoFiles(),
+        tokens=tokens or FakeGitHubApp(),
         lease_seconds=600,
         clock=clock,
     )
@@ -61,8 +62,9 @@ def test_successful_run_persists_steps_and_completes(session, session_factory, t
     run = queue_run(session, ticket)
     session.commit()
     repo_files = FakeRepoFiles()
+    app = FakeGitHubApp()
 
-    assert make_executor(session_factory, repo_files=repo_files).run_next() == run.id
+    assert make_executor(session_factory, repo_files=repo_files, tokens=app).run_next() == run.id
 
     run = reload(session, run)
     assert run.status == RunStatus.COMPLETED
@@ -70,6 +72,10 @@ def test_successful_run_persists_steps_and_completes(session, session_factory, t
     assert run.lease_expires_at is None and run.error is None
     assert reload(session, ticket).status == TicketStatus.COMPLETED
     assert repo_files.requested == ["octo/demo"]
+    # The files were read with a token minted for this repo's installation, not anonymously.
+    installation_id = ticket.repo_connection.github_installation.installation_id
+    assert app.tokens_requested == [installation_id]
+    assert repo_files.tokens == [f"token-for-{installation_id}"]
 
     (step,) = session.scalars(select(AgentStep).where(AgentStep.run_id == run.id)).all()
     assert step.agent_name == "planner"

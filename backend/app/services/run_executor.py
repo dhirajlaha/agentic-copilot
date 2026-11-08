@@ -18,6 +18,7 @@ from app.agents.state import RunInput
 from app.core.exceptions import AppError
 from app.db.enums import RunStatus, TicketStatus
 from app.db.models import AgentRun
+from app.integrations.github_app import InstallationTokenSource
 from app.integrations.github_repos import RepoFilesProvider
 from app.llm.client import LLMError
 from app.repositories.run_repository import AgentRunRepository, AgentStepRepository
@@ -42,12 +43,14 @@ class RunExecutor:
         session_factory: Callable[[], Session],
         graph: CompiledStateGraph,
         repo_files: RepoFilesProvider,
+        tokens: InstallationTokenSource,
         lease_seconds: int,
         clock: Callable[[], datetime] = _now,
     ) -> None:
         self._session_factory = session_factory
         self._graph = graph
         self._repo_files = repo_files
+        self._tokens = tokens
         self._lease = timedelta(seconds=lease_seconds)
         self._clock = clock
 
@@ -113,7 +116,10 @@ class RunExecutor:
         ticket = TicketRepository(session).get(run.ticket_id)
         if ticket is None:
             raise AppError("Ticket was deleted")
-        files = self._repo_files.list_files(ticket.repo_connection.repo_full_name)
+        repo = ticket.repo_connection
+        # A fresh, short-lived token per run, used only for this listing and never stored.
+        token = self._tokens.installation_token(repo.github_installation.installation_id)
+        files = self._repo_files.list_files(repo.repo_full_name, token)
         return RunInput(
             ticket_id=str(ticket.id),
             repo_connection_id=str(ticket.repo_connection_id),

@@ -127,3 +127,58 @@ def test_email_lookup_failure_does_not_block_sign_in():
 
     user = make_client(handler).fetch_user("c", "v")
     assert (user.id, user.login, user.email) == (7, "octo", None)
+
+
+def installations_handler(pages, seen=None):
+    """Token exchange, /user, then /user/installations served page by page."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/oauth/access_token":
+            if seen is not None:
+                seen.append(request.content.decode())
+            return httpx.Response(200, json={"access_token": "tok"})
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"id": 7, "login": "octo"})
+        assert request.url.path == "/user/installations"
+        page = int(request.url.params["page"])
+        return httpx.Response(200, json={"installations": pages[page - 1]})
+
+    return handler
+
+
+def installation(n: int) -> dict:
+    return {"id": n, "account": {"login": f"acct{n}", "type": "Organization"}}
+
+
+def test_fetch_installations_returns_user_and_installations():
+    seen: list[str] = []
+    grant = make_client(
+        installations_handler([[installation(1), installation(2)]], seen)
+    ).fetch_installations("c0de")
+    assert grant.github_user_id == 7
+    assert [(i.id, i.account_login, i.account_type) for i in grant.installations] == [
+        (1, "acct1", "Organization"),
+        (2, "acct2", "Organization"),
+    ]
+    # The install flow has no PKCE challenge, so no verifier is sent.
+    assert "code_verifier" not in seen[0] and "client_secret=secret" in seen[0]
+
+
+def test_fetch_installations_follows_pages():
+    first = [installation(n) for n in range(100)]
+    grant = make_client(installations_handler([first, [installation(500)]])).fetch_installations(
+        "c"
+    )
+    assert len(grant.installations) == 101
+
+
+def test_fetch_installations_rejects_malformed_responses():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/login/oauth/access_token":
+            return httpx.Response(200, json={"access_token": "tok"})
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"id": 7})
+        return httpx.Response(200, json={"installations": [{"id": 1}]})
+
+    with pytest.raises(GitHubError):
+        make_client(handler).fetch_installations("c")

@@ -1,8 +1,8 @@
 """Lists a repository's files through the GitHub REST API (git trees).
 
-Public repositories work without credentials (GitHub allows 60 unauthenticated requests
-per hour per IP). Private repositories need an installation token, which the repo-connect
-flow (GitHub App installation) will pass in as `token`; the code path is the same.
+Connected repositories are read with a short-lived installation token (private repos work,
+and the rate limit is far higher). Without a token only public repositories work, at 60
+requests per hour per IP.
 """
 
 import logging

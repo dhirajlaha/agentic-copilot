@@ -14,6 +14,7 @@ frontend/*.tsbuildinfo
 .env
 .env.*
 !.env.example
+secrets/
 
 # Editors and OS
 .vscode/

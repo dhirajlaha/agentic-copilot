@@ -14,7 +14,8 @@ from app.api.cookies import (
     set_session_cookie,
     set_state_cookie,
 )
-from app.api.deps import AuthServiceDep, CurrentUser, SettingsDep
+from app.api.deps import AuthServiceDep, CurrentUser, RepoServiceDep, SettingsDep, UserOrNone
+from app.api.repos import finish_install_redirect
 from app.core.exceptions import GitHubError, OAuthDeniedError, OAuthStateError
 from app.db.models import User
 from app.schemas.auth import UserOut
@@ -42,13 +43,29 @@ def github_login(
 def github_callback(
     request: Request,
     auth: AuthServiceDep,
+    repos: RepoServiceDep,
     settings: SettingsDep,
+    user: UserOrNone,
     code: Annotated[str | None, Query(max_length=512)] = None,
     state: Annotated[str | None, Query(max_length=512)] = None,
     error: Annotated[str | None, Query(max_length=100)] = None,
+    installation_id: Annotated[str | None, Query(max_length=32)] = None,
+    setup_action: Annotated[str | None, Query(max_length=32)] = None,
 ) -> RedirectResponse:
-    """GitHub redirects here. Every outcome ends as a redirect to the frontend: success
+    """GitHub redirects here, both after sign-in and after installing the app (one
+    callback URL serves both). Every outcome ends as a redirect to the frontend: success
     goes to the requested page, failure to /login?error=<code> (details stay in the logs)."""
+    if installation_id is not None or setup_action is not None:
+        return finish_install_redirect(
+            request=request,
+            user=user,
+            repos=repos,
+            settings=settings,
+            code=code,
+            state=state,
+            installation_id=installation_id,
+            error=error,
+        )
     failure: str | None = None
     result: LoginResult | None = None
     if error == "access_denied":

@@ -1,7 +1,10 @@
 from functools import cached_property, lru_cache
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,7 +21,7 @@ class DatabaseSettings(BaseSettings):
     database_url: SecretStr = Field(min_length=1)
 
 
-LLMProvider = Literal["anthropic", "bedrock", "foundry", "openai"]
+LLMProvider = Literal["anthropic", "bedrock", "foundry", "openai", "gemini"]
 
 
 class LLMSettings(BaseSettings):
@@ -29,8 +32,9 @@ class LLMSettings(BaseSettings):
     - anthropic: Claude API. Needs LLM_API_KEY.
     - bedrock: Claude on Amazon Bedrock. Needs AWS_REGION and AWS credentials.
     - foundry: Claude on Microsoft Foundry. Needs LLM_API_KEY and FOUNDRY_RESOURCE.
-    - openai: OpenAI, or any OpenAI-compatible endpoint (Azure OpenAI, Gemini, vLLM)
+    - openai: OpenAI, or any OpenAI-compatible endpoint (Azure OpenAI, vLLM)
       selected with LLM_BASE_URL. Needs LLM_API_KEY.
+    - gemini: Google Gemini through its native API. Needs LLM_API_KEY.
     """
 
     model_config = _ENV
@@ -53,7 +57,10 @@ class LLMSettings(BaseSettings):
     @model_validator(mode="after")
     def _provider_requirements(self) -> "LLMSettings":
         missing: list[str] = []
-        if self.llm_provider in ("anthropic", "foundry", "openai") and not self.llm_api_key:
+        if (
+            self.llm_provider in ("anthropic", "foundry", "openai", "gemini")
+            and not self.llm_api_key
+        ):
             missing.append("LLM_API_KEY")
         if self.llm_provider == "foundry" and not self.foundry_resource:
             missing.append("FOUNDRY_RESOURCE")
@@ -130,9 +137,50 @@ class WorkerSettings(BaseSettings):
     run_lease_seconds: int = Field(default=1200, gt=0)
 
 
+class GitHubAppSettings(BaseSettings):
+    """The GitHub App itself (not the sign-in OAuth part): lets the backend act as an
+    installation to read a connected repository. Used by the API (repo connect) and the
+    worker (reading files for a run).
+
+    The private key is a file, not an env var: it stays out of the repo, process listings
+    and logs, and is checked at startup so a bad path fails fast instead of at first use.
+    """
+
+    model_config = _ENV
+
+    # GitHub recommends the client id (not the numeric App ID) as the JWT issuer.
+    github_client_id: str = Field(min_length=1)
+    # The last part of https://github.com/apps/<slug>; builds the install link.
+    github_app_slug: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,99}$")
+    github_app_private_key_path: Path
+
+    @model_validator(mode="after")
+    def _key_is_a_readable_rsa_private_key(self) -> "GitHubAppSettings":
+        path = self.github_app_private_key_path
+        try:
+            key = load_pem_private_key(path.read_bytes(), password=None)
+        except OSError as exc:
+            raise ValueError(f"GITHUB_APP_PRIVATE_KEY_PATH is not readable: {path}") from exc
+        except (ValueError, TypeError) as exc:
+            # Never include the file contents or the library's detail in the message.
+            raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH is not an unencrypted PEM key") from exc
+        if not isinstance(key, RSAPrivateKey):
+            raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH must be an RSA private key")
+        return self
+
+    @cached_property
+    def private_key_pem(self) -> SecretStr:
+        return SecretStr(self.github_app_private_key_path.read_text())
+
+
 @lru_cache
 def get_worker_settings() -> WorkerSettings:
     return WorkerSettings()
+
+
+@lru_cache
+def get_github_app_settings() -> GitHubAppSettings:
+    return GitHubAppSettings()  # type: ignore[call-arg]  # values come from the environment
 
 
 @lru_cache

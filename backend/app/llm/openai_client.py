@@ -1,9 +1,9 @@
 """Any OpenAI-compatible Chat Completions endpoint, through the official `openai` SDK.
 
 Covers OpenAI itself plus anything that speaks the same protocol, selected by base URL:
-Azure OpenAI (v1 endpoint), Google Gemini (its OpenAI-compatible endpoint) and a
-self-hosted vLLM server (week 8). Claude is deliberately NOT routed through here: Claude
-always goes through the Anthropic SDK (`anthropic_client.py`).
+Azure OpenAI (v1 endpoint) and a self-hosted vLLM server (week 8). Claude is deliberately
+NOT routed through here (it uses the Anthropic SDK, `anthropic_client.py`), and neither is
+Gemini (it uses Google's SDK, `gemini_client.py`).
 """
 
 import time

@@ -2,10 +2,13 @@
 
 import anthropic
 import openai
+from google import genai
+from google.genai import types as genai_types
 
 from app.core.config import LLMSettings
 from app.llm.anthropic_client import AnthropicLLMClient
 from app.llm.client import LLMClient
+from app.llm.gemini_client import GeminiLLMClient
 from app.llm.openai_client import OpenAICompatibleLLMClient
 
 
@@ -31,6 +34,15 @@ def build_llm_client(settings: LLMSettings) -> LLMClient:
             anthropic.AnthropicFoundry(api_key=key, resource=settings.foundry_resource, **common),
             provider=provider,
             **limits,
+        )
+    if provider == "gemini":
+        # google-genai takes the timeout in milliseconds; `attempts` includes the first try.
+        options = genai_types.HttpOptions(
+            timeout=round(settings.llm_timeout_seconds * 1000),
+            retry_options=genai_types.HttpRetryOptions(attempts=settings.llm_max_retries + 1),
+        )
+        return GeminiLLMClient(
+            genai.Client(api_key=key, http_options=options), provider=provider, **limits
         )
     # "openai": OpenAI, or any OpenAI-compatible endpoint via LLM_BASE_URL
     return OpenAICompatibleLLMClient(

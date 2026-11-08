@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from app.core.config import LLMSettings
 from app.llm.anthropic_client import AnthropicLLMClient
 from app.llm.factory import build_llm_client
+from app.llm.gemini_client import GeminiLLMClient
 from app.llm.openai_client import OpenAICompatibleLLMClient
 
 
@@ -32,6 +33,11 @@ def _clean_env(monkeypatch):
     [
         ({"llm_provider": "anthropic"}, "LLM_API_KEY"),
         ({"llm_provider": "openai"}, "LLM_API_KEY"),
+        ({"llm_provider": "gemini"}, "LLM_API_KEY"),
+        (
+            {"llm_provider": "gemini", "llm_api_key": "k", "llm_base_url": "http://x"},
+            "LLM_BASE_URL",
+        ),
         ({"llm_provider": "foundry", "llm_api_key": "k"}, "FOUNDRY_RESOURCE"),
         ({"llm_provider": "bedrock"}, "AWS_REGION"),
         (
@@ -88,3 +94,14 @@ def test_openai_base_url_is_applied():
         settings(llm_provider="openai", llm_api_key="k", llm_base_url="http://localhost:8001/v1")
     )
     assert str(client._client.base_url).startswith("http://localhost:8001/v1")
+
+
+def test_gemini_client_gets_timeout_and_retry_settings():
+    client = build_llm_client(
+        settings(llm_provider="gemini", llm_api_key="k", llm_timeout_seconds=30, llm_max_retries=4)
+    )
+    assert isinstance(client, GeminiLLMClient)
+    assert client.provider == "gemini" and client.model == "m"
+    options = client._client._api_client._http_options
+    assert options.timeout == 30_000  # the SDK takes milliseconds
+    assert options.retry_options.attempts == 5  # attempts include the first try

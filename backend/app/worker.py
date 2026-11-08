@@ -17,10 +17,12 @@ from app.core.config import get_embedding_settings, get_github_app_settings, get
 from app.core.logging import configure_logging
 from app.db.session import get_session_factory
 from app.integrations.github_app import GitHubAppClient
+from app.integrations.github_files import GitHubFileReader
 from app.integrations.github_repos import GitHubRepoFiles
 from app.integrations.github_snapshot import GitHubSnapshotReader
 from app.llm.factory import build_embedding_client
 from app.services.index_service import RepoIndexer
+from app.services.run_context import RunContextBuilder
 from app.services.run_executor import RunExecutor
 
 logger = logging.getLogger("app.worker")
@@ -59,6 +61,11 @@ def main() -> None:
             indexer=RepoIndexer(
                 session_factory=session_factory,
                 snapshots=GitHubSnapshotReader(http),
+                embedder=embedder,
+            ),
+            contexts=RunContextBuilder(
+                session_factory=session_factory,
+                file_reader=GitHubFileReader(http),
                 embedder=embedder,
             ),
             lease_seconds=settings.run_lease_seconds,

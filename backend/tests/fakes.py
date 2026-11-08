@@ -49,14 +49,27 @@ class FakeGitHub:
 
 
 class FakeLLM:
-    """An LLMClient that returns canned outputs and records every call."""
+    """An LLMClient that returns canned outputs and records every call.
+
+    Give `output` to answer every call the same way, or `outputs` to answer by requested
+    schema ({schema: output}). A list is consumed one item per call (a repair loop asks the
+    same schema several times).
+    """
 
     provider = "fake"
     model = "fake-model"
 
-    def __init__(self, output: Any = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        output: Any = None,
+        error: Exception | None = None,
+        outputs: dict[type, Any] | None = None,
+    ) -> None:
         self.output = output
         self.error = error
+        self.outputs = {
+            k: list(v) if isinstance(v, list) else v for k, v in (outputs or {}).items()
+        }
         self.calls: list[dict[str, Any]] = []
 
     def generate_structured(
@@ -67,13 +80,23 @@ class FakeLLM:
         )
         if self.error is not None:
             raise self.error
+        output = self.output
+        if schema in self.outputs:
+            output = self.outputs[schema]
+            if isinstance(output, list):
+                if not output:
+                    raise AssertionError(f"FakeLLM has no more answers for {schema.__name__}")
+                output = output.pop(0)
         return LLMResult(
-            output=self.output,
+            output=output,
             usage=LLMUsage(input_tokens=120, output_tokens=30),
             model=self.model,
             latency_ms=42,
             request_id="req_test",
         )
+
+    def calls_for(self, schema: type) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c["schema"] is schema]
 
 
 class FakeRepoFiles:
@@ -208,3 +231,72 @@ class FakeIndexer:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class FakeFiles:
+    """A FileReader over an in-memory repository: {path: text}. A value that is an
+    Exception is raised when that path is read."""
+
+    def __init__(self, files: dict[str, Any] | None = None) -> None:
+        self.files = dict(files or {})
+        self.reads: list[str] = []
+
+    def read_text(self, path: str):
+        self.reads.append(path)
+        value = self.files.get(path)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+class FakeSearch:
+    """A CodeSearch returning fixed chunks (or none), recording every query."""
+
+    def __init__(self, hits=None) -> None:
+        self.hits = list(hits or [])
+        self.queries: list[tuple[str, int]] = []
+
+    def search(self, query: str, limit: int):
+        self.queries.append((query, limit))
+        return self.hits[:limit]
+
+
+class FakeContextBuilder:
+    """Stands in for RunContextBuilder in executor tests."""
+
+    def __init__(self, files: dict[str, Any] | None = None, hits=None) -> None:
+        self.files = (
+            files
+            if files is not None
+            else {"src/login.py": "def parse(email):\n    return email\n"}
+        )
+        self.hits = hits
+        self.built: list[dict[str, Any]] = []
+
+    def build(self, *, repo_connection_id, repo_full_name, commit_sha, token):
+        from app.agents.context import RunContext
+
+        self.built.append({"repo": repo_full_name, "commit": commit_sha, "token": token})
+        return RunContext(files=FakeFiles(self.files), search=FakeSearch(self.hits))
+
+
+LOGIN_PY = "def parse(email):\n    return email\n"
+
+
+def default_coder_output():
+    """A valid change to LOGIN_PY, matching the planner output used across the tests."""
+    from app.agents.schemas import CoderOutput, EditOut, FileChangeOut
+
+    return CoderOutput(
+        summary="Strip whitespace before parsing.",
+        changes=[
+            FileChangeOut(
+                path="src/login.py",
+                action="modify",
+                edits=[EditOut(search="    return email\n", replace="    return email.strip()\n")],
+                content="",
+                reason="Whitespace broke parsing.",
+            )
+        ],
+        open_questions=[],
+    )

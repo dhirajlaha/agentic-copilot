@@ -42,3 +42,7 @@ class InstallationVerificationError(AppError):
 
 class IndexBusyError(AppError):
     """Another worker has been indexing this repository for too long to wait for."""
+
+
+class CodingError(AppError):
+    """The Coder could not produce a valid patch, even after being asked to fix its mistakes."""

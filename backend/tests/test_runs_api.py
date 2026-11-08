@@ -75,8 +75,9 @@ def test_full_flow_queue_execute_poll_rerun(client, session_factory, alice):
 
     detail = client.get(f"/runs/{run_id}").json()
     assert detail["status"] == "completed"
-    assert [s["agent_name"] for s in detail["steps"]] == ["indexer", "planner"]
+    assert [s["agent_name"] for s in detail["steps"]] == ["indexer", "planner", "coder"]
     assert detail["steps"][1]["output"]["subtasks"][0]["title"] == "Fix parser"
+    assert detail["steps"][2]["output"]["files_changed"] == 1
     assert client.get(f"/tickets/{alice[1].id}").json()["status"] == "completed"
     # A finished run no longer blocks a new one.
     assert client.post(f"/tickets/{alice[1].id}/run").status_code == 202

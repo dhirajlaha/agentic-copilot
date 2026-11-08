@@ -15,6 +15,7 @@ from uuid import UUID
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.orm import Session
 
+from app.agents.context import CONTEXT_KEY, RunContext
 from app.agents.planner import PlanningError
 from app.agents.state import RunInput
 from app.agents.steps import StepRecord
@@ -26,6 +27,7 @@ from app.llm.client import LLMError
 from app.repositories.run_repository import AgentRunRepository, AgentStepRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.services.index_service import RepoIndexer
+from app.services.run_context import RunContextBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ class RunExecutor:
         repo_files: RepoFilesProvider,
         tokens: InstallationTokenSource,
         indexer: RepoIndexer,
+        contexts: RunContextBuilder,
         lease_seconds: int,
         clock: Callable[[], datetime] = _now,
     ) -> None:
@@ -56,6 +59,7 @@ class RunExecutor:
         self._repo_files = repo_files
         self._tokens = tokens
         self._indexer = indexer
+        self._contexts = contexts
         self._lease = timedelta(seconds=lease_seconds)
         self._clock = clock
 
@@ -89,10 +93,11 @@ class RunExecutor:
         with self._session_factory() as session:
             runs, steps = AgentRunRepository(session), AgentStepRepository(session)
             try:
-                run_input = self._prepare(session, run_id, runs, steps)
+                run_input, context = self._prepare(session, run_id, runs, steps)
                 # stream_mode="updates" yields each node's output as soon as it finishes,
                 # so the dashboard sees steps live instead of only at the end.
-                for update in self._graph.stream(run_input, stream_mode="updates"):
+                config = {"configurable": {CONTEXT_KEY: context}}
+                for update in self._graph.stream(run_input, config, stream_mode="updates"):
                     for node_output in update.values():
                         for record in (node_output or {}).get("steps", []):
                             steps.add(run_id, record)
@@ -121,9 +126,9 @@ class RunExecutor:
         run_id: UUID,
         runs: AgentRunRepository,
         steps: AgentStepRepository,
-    ) -> RunInput:
+    ) -> tuple[RunInput, RunContext]:
         """Load the ticket, bring the code index up to date (recorded as a step), and
-        build the graph's input."""
+        build the graph's input and the per-run context (files and search)."""
         run = runs.get(run_id)
         if run is None:
             raise AppError("Run disappeared before it could start")
@@ -156,13 +161,21 @@ class RunExecutor:
         runs.extend_lease(run_id, self._clock() + self._lease)
         session.commit()
 
-        return RunInput(
+        run_input = RunInput(
             ticket_id=str(ticket.id),
             repo_connection_id=str(repo_id),
             title=ticket.title,
             description=ticket.description,
             repo_files=self._repo_files.list_files(repo_name, token),
+            base_commit_sha=result.commit_sha,
         )
+        context = self._contexts.build(
+            repo_connection_id=repo_id,
+            repo_full_name=repo_name,
+            commit_sha=result.commit_sha,
+            token=token,
+        )
+        return run_input, context
 
     def _renew_lease(self, run_id: UUID) -> None:
         """Keep the run's lease alive from a separate session, so a long indexing job is

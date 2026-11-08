@@ -5,14 +5,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import build_graph
-from app.agents.schemas import CandidateFileOut, PlannerOutput, SubtaskOut
+from app.agents.schemas import CandidateFileOut, CoderOutput, PlannerOutput, SubtaskOut
 from app.core.exceptions import RepositoryAccessError
 from app.db.enums import RunStatus, TicketStatus
 from app.db.models import AgentRun, AgentStep, Ticket
 from app.llm.client import LLMUnavailableError
 from app.services.run_executor import LEASE_EXPIRED_ERROR, RunExecutor
 from tests.factories import create_repo, create_ticket, create_user
-from tests.fakes import FakeGitHubApp, FakeIndexer, FakeLLM, FakeRepoFiles
+from tests.fakes import (
+    FakeContextBuilder,
+    FakeGitHubApp,
+    FakeIndexer,
+    FakeLLM,
+    FakeRepoFiles,
+    default_coder_output,
+)
 
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 
@@ -25,15 +32,26 @@ def planner_output() -> PlannerOutput:
     )
 
 
+def default_llm() -> FakeLLM:
+    return FakeLLM(outputs={PlannerOutput: planner_output(), CoderOutput: default_coder_output()})
+
+
 def make_executor(
-    session_factory, llm=None, repo_files=None, tokens=None, indexer=None, clock=lambda: NOW
+    session_factory,
+    llm=None,
+    repo_files=None,
+    tokens=None,
+    indexer=None,
+    contexts=None,
+    clock=lambda: NOW,
 ):
     return RunExecutor(
         session_factory=session_factory,
-        graph=build_graph(llm or FakeLLM(planner_output())),
+        graph=build_graph(llm or default_llm()),
         repo_files=repo_files or FakeRepoFiles(),
         tokens=tokens or FakeGitHubApp(),
         indexer=indexer or FakeIndexer(),
+        contexts=contexts or FakeContextBuilder(),
         lease_seconds=600,
         clock=clock,
     )
@@ -81,9 +99,13 @@ def test_successful_run_persists_steps_and_completes(session, session_factory, t
     assert repo_files.tokens == [f"token-for-{installation_id}"]
 
     rows = session.scalars(select(AgentStep).where(AgentStep.run_id == run.id)).all()
-    indexer_step, step = sorted(rows, key=lambda r: r.agent_name != "indexer")
+    order = {"indexer": 0, "planner": 1, "coder": 2}
+    indexer_step, step, coder_step = sorted(rows, key=lambda r: order[r.agent_name])
     assert indexer_step.agent_name == "indexer"
     assert step.agent_name == "planner"
+    assert coder_step.agent_name == "coder"
+    assert coder_step.output["files_changed"] == 1
+    assert coder_step.output["base_commit_sha"] == "b" * 40  # the commit the index synced to
     assert step.tokens_used == 150 and step.latency_ms == 42
     assert step.output["candidate_files"][0]["path"] == "src/login.py"
     assert step.input == {"ticket_id": str(ticket.id), "files_shown": 2, "files_omitted": 0}
@@ -111,7 +133,7 @@ def test_the_index_is_synced_first_and_recorded_as_a_step(session, session_facto
 def test_a_failing_index_fails_the_run_before_any_agent_runs(session, session_factory, ticket):
     run = queue_run(session, ticket)
     session.commit()
-    llm = FakeLLM(planner_output())
+    llm = default_llm()
     indexer = FakeIndexer(error=RepositoryAccessError("octo/demo is too large to index"))
 
     make_executor(session_factory, llm=llm, indexer=indexer).run_next()
@@ -134,6 +156,53 @@ def test_the_indexers_heartbeat_renews_the_run_lease(session, session_factory, t
     executor.run_next()
 
     assert renewed == [run.id]
+
+
+def test_the_run_context_is_built_for_the_synced_commit_with_the_run_token(
+    session, session_factory, ticket
+):
+    queue_run(session, ticket)
+    session.commit()
+    contexts = FakeContextBuilder()
+    app = FakeGitHubApp()
+
+    make_executor(session_factory, contexts=contexts, tokens=app).run_next()
+
+    installation_id = ticket.repo_connection.github_installation.installation_id
+    assert contexts.built == [
+        {"repo": "octo/demo", "commit": "b" * 40, "token": f"token-for-{installation_id}"}
+    ]
+
+
+def test_a_coder_that_cannot_produce_a_valid_patch_fails_the_run_clearly(
+    session, session_factory, ticket
+):
+    from app.agents.schemas import EditOut, FileChangeOut
+
+    run = queue_run(session, ticket)
+    session.commit()
+    bad = CoderOutput(
+        summary="x",
+        changes=[
+            FileChangeOut(
+                path="src/login.py",
+                action="modify",
+                edits=[EditOut(search="text that is not in the file", replace="y")],
+                content="",
+                reason="r",
+            )
+        ],
+        open_questions=[],
+    )
+    llm = FakeLLM(outputs={PlannerOutput: planner_output(), CoderOutput: [bad, bad, bad]})
+
+    make_executor(session_factory, llm=llm).run_next()
+
+    run = reload(session, run)
+    assert run.status == RunStatus.FAILED
+    assert "could not produce a valid patch after 3 attempts" in run.error
+    assert "was not found in the file" in run.error
+    assert reload(session, ticket).status == TicketStatus.OPEN
 
 
 def test_oldest_pending_run_is_claimed_first(session, session_factory):
